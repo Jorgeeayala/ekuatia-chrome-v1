@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "Buscar CDC en e-Kuatia",
+  "version": "1.0",
+  "permissions": ["contextMenus", "tabs", "scripting", "storage"],
+  "host_permissions": ["https://ekuatia.set.gov.py/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "commands": {
+    "buscar_cdc": {
+      "suggested_key": {
+        "default": "Alt+C"
+      },
+      "description": "Buscar el CDC seleccionado en e-Kuatia"
+    }
+  }
+}
