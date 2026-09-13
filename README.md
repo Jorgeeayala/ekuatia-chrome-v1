@@ -1,37 +1,76 @@
 # Buscar CDC en e-Kuatia
 
-Extensión de Chrome (Manifest V3) para consultar comprobantes electrónicos en
-[e-Kuatia](https://ekuatia.set.gov.py/consultas/) (SIFEN, DNIT Paraguay) a
+Extensión de Chrome (Manifest V3) para trabajar con comprobantes electrónicos
+de [e-Kuatia](https://ekuatia.set.gov.py/consultas/) (SIFEN, DNIT Paraguay) a
 partir del **CDC** — el Código de Control de 44 dígitos que figura en el KuDE.
 
-Seleccionás el CDC en cualquier lado, y la extensión abre (o reutiliza) la
-pestaña de e-Kuatia, rellena el campo, espera a que el reCAPTCHA esté resuelto
-y pulsa *Consultar* por vos.
+Hace dos cosas:
+
+1. **Descarga el XML del comprobante** directamente, sin certificado, sin
+   sesión y sin reCAPTCHA. Es el camino principal.
+2. **Consulta la web de e-Kuatia** (rellena el campo, espera el token del
+   reCAPTCHA y pulsa *Consultar*), para ver el estado y el KuDE en pantalla.
 
 ## Instalación
 
 1. `chrome://extensions` → activar **Modo de desarrollador**
 2. **Cargar descomprimida** → seleccionar esta carpeta
-3. (Opcional, recomendado) instalar
-   [CaptchaRaptor](https://github.com/CaptchaRaptor/captchaplugin) cargando su
-   carpeta `extension/`. Es una **extensión aparte**: resuelve el reCAPTCHA
-   dentro del iframe de Google. Esta extensión no habla con ella, sólo espera a
-   que el token aparezca en la página.
+3. Si Chrome tiene activada la opción *"Preguntar dónde guardar cada archivo"*,
+   conviene desactivarla en `chrome://settings/downloads` para que los XML
+   bajen solos a `Descargas/e-Kuatia/xml/`.
+
+Para el camino 1 no hace falta nada más. Para el camino 2 hace falta que el
+reCAPTCHA quede resuelto: se recomienda instalar
+[CaptchaRaptor](https://github.com/CaptchaRaptor/captchaplugin) cargando su
+carpeta `extension/`. Es una **extensión aparte** — resuelve el captcha dentro
+del iframe de Google; esta extensión sólo espera a que el token aparezca.
 
 ## Uso
 
-- **Menú contextual**: seleccioná el CDC con el mouse → clic derecho →
-  *Buscar CDC en e-Kuatia*
-- **Atajo**: seleccioná el CDC y pulsá `Alt+C`
-- **Popup** (ícono de la extensión): bandeja con los CDC consultados y un botón
-  para copiarlos todos, uno por línea.
+| Acción | Cómo |
+|---|---|
+| Descargar el XML | seleccionar el CDC → clic derecho → *Descargar XML del CDC*, o `Alt+X` |
+| Consultar en la web | seleccionar el CDC → clic derecho → *Consultar CDC en e-Kuatia (web)*, o `Alt+C` |
+| Ver la bandeja y descargar | ícono de la extensión |
 
 El CDC se acepta con espacios, puntos o guiones (el KuDE lo imprime en grupos
 de cuatro) y se valida: 44 dígitos y **dígito verificador módulo 11** según el
-Manual Técnico del SIFEN v150 §10.1 y §10.2. Si el dígito no cierra, la
-extensión avisa con una `!` roja en el ícono y no toca la página.
+Manual Técnico del SIFEN v150 §10.1 y §10.2. Si el dígito no cierra, avisa con
+una `!` roja y no hace nada.
 
-## Cómo funciona
+## La descarga del XML
+
+```
+GET https://ekuatia.set.gov.py/docs/documento-electronico-xml/<CDC>  →  application/xml
+```
+
+Devuelve el DTE completo y firmado. Detalle importante: cuando el CDC no tiene
+XML público responde `200` con un **HTML vacío**, así que la respuesta se
+valida antes de guardar — nunca se escribe un `.xml` vacío. Todo documentado en
+[`DESCARGA-XML.md`](DESCARGA-XML.md).
+
+### En lote, sin navegador
+
+```bash
+node tools/descargar-xml.js --entrada cdcs.txt --salida ./xml
+```
+
+Deja los XML, `no_encontrados.txt`, `no_validos.txt` y `resumen.csv`. Sin
+dependencias (Node 18+).
+
+## Estructura
+
+| Archivo | Qué hace |
+|---|---|
+| `manifest.json` | MV3: content script, comandos `Alt+C` / `Alt+X`, popup |
+| `background.js` | service worker: valida, descarga y consulta |
+| `src/cdc.js` | normalizar, validar (módulo 11) y descomponer el CDC |
+| `src/content.js` | rellena la web, espera el captcha y consulta |
+| `popup.html` / `popup.js` | bandeja de CDC y descargas |
+| `tools/descargar-xml.js` | descarga en lote desde la línea de comandos |
+| `DESCARGA-XML.md` | el endpoint, su comportamiento y cómo usarlo |
+
+## Cómo funciona la consulta web
 
 ```
 selección de texto
@@ -40,48 +79,19 @@ selección de texto
              └─► content.js:
                   1. localiza el campo "Ingrese CDC" y lo rellena
                      (setter nativo de `value`, para que Angular lo registre)
-                  2. si la página tiene reCAPTCHA, espera el token
-                     (hasta 90 s — es lo que resuelve CaptchaRaptor)
+                  2. si la página tiene reCAPTCHA, espera el token (hasta 90 s)
                   3. pulsa "Consultar"
                   4. espera el resultado y enumera los controles de descarga
-                  5. muestra un panel con el estado y avisa al service worker
 ```
 
-Si el sitio cambia el DOM, lo que falla es el selector, no el flujo: la
-búsqueda del campo y del botón se hace por capas (atributos, etiqueta, bloque
-"Consultar por CDC", y recién al final el primer input visible).
+La búsqueda del campo y del botón se hace por capas (atributos, etiqueta,
+bloque "Consultar por CDC", y recién al final el primer input visible): si el
+sitio cambia el DOM, falla el selector, no todo el flujo.
 
-## Estructura
+## Próximo paso
 
-| Archivo | Qué hace |
-|---|---|
-| `manifest.json` | MV3: content script, comando `Alt+C`, popup |
-| `background.js` | service worker: validación, pestañas, bandeja |
-| `src/cdc.js` | normalizar, validar (módulo 11) y descomponer el CDC |
-| `src/content.js` | rellena, espera el captcha, consulta y detecta descargas |
-| `popup.html` / `popup.js` | bandeja de CDC consultados |
-| `GUIA-CAPTURA-RED.md` | cómo capturar el request de descarga con DevTools |
-
-## Estado: la descarga del XML
-
-Pendiente de confirmar. La documentación pública indica que la consulta
-**pública** de e-Kuatia entrega estado, cabecera y totales, y que el XML
-completo sólo se obtiene por el Web Service de SIFEN con certificado — pero
-hay un reporte de que la propia pantalla de consulta ofrece descargar.
-
-Antes de escribir el descargador hay que verificarlo. El procedimiento está en
-[`GUIA-CAPTURA-RED.md`](GUIA-CAPTURA-RED.md).
-
-### Plan previsto (3 piezas sueltas)
-
-1. **Captura** — esta extensión (hecha, salvo la descarga).
-2. **Descarga** — proceso local que toma una lista de CDC y guarda
-   `xml/<CDC>.xml`. Si el XML sale de la web, se hace desde el navegador; si
-   hace falta el WS de SIFEN, va con certificado desde un script (esa vía no
-   tiene captcha: es SOAP sobre TLS mutuo, y responde `0422` con el XML cuando
-   el documento está aprobado).
-3. **Impresión** — visor local que lee la carpeta de XML e imprime o exporta a
-   PDF.
+Pendiente: **parsear los XML descargados e imprimirlos o exportarlos a PDF**
+(réplica del KuDE, ticket térmico o planilla resumida).
 
 ## Créditos
 
@@ -89,4 +99,4 @@ Antes de escribir el descargador hay que verificarlo. El procedimiento está en
   (DNIT), §10.1 y §10.2. Implementación de referencia consultada:
   [sifen-cdc](https://github.com/FindTek/sifen-cdc) (MIT).
 - Resolución del reCAPTCHA: [CaptchaRaptor/captchaplugin](https://github.com/CaptchaRaptor/captchaplugin)
-  (MIT), instalado como extensión independiente.
+  (MIT), como extensión independiente.

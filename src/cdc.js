@@ -143,3 +143,23 @@ function fechaDeCdc(aaaammdd) {
   );
   return isNaN(d.getTime()) ? null : d;
 }
+
+/* El archivo se usa en tres contextos (service worker por importScripts,
+ * content script y popup) y también desde Node con el CLI de tools/.
+ * En navegador `module` no existe y este bloque se ignora.
+ */
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    LARGO_CDC: LARGO_CDC,
+    LAYOUT_CDC: LAYOUT_CDC,
+    TIPO_DOCUMENTO: TIPO_DOCUMENTO,
+    normalizarCdc: normalizarCdc,
+    digitoVerificadorCdc: digitoVerificadorCdc,
+    digitoVerificadorRuc: digitoVerificadorRuc,
+    analizarCdc: analizarCdc,
+    validarCdc: validarCdc,
+    extraerCdc: extraerCdc,
+    formatearCdc: formatearCdc,
+    fechaDeCdc: fechaDeCdc,
+  };
+}

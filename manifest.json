@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Buscar CDC en e-Kuatia",
-  "version": "1.1",
-  "description": "Consulta comprobantes electrónicos en e-Kuatia (SET/DNIT Paraguay) a partir del CDC: valida, rellena y espera el reCAPTCHA.",
-  "permissions": ["contextMenus", "tabs", "scripting", "storage"],
+  "version": "1.2",
+  "description": "Consulta y descarga el XML de comprobantes electrónicos de e-Kuatia (SET/DNIT Paraguay) a partir del CDC.",
+  "permissions": ["contextMenus", "tabs", "scripting", "storage", "downloads"],
   "host_permissions": ["https://ekuatia.set.gov.py/*"],
   "background": {
     "service_worker": "background.js"
@@ -24,7 +24,13 @@
       "suggested_key": {
         "default": "Alt+C"
       },
-      "description": "Buscar el CDC seleccionado en e-Kuatia"
+      "description": "Consultar el CDC seleccionado en la web de e-Kuatia"
+    },
+    "descargar_xml": {
+      "suggested_key": {
+        "default": "Alt+X"
+      },
+      "description": "Descargar el XML del CDC seleccionado"
     }
   }
 }
