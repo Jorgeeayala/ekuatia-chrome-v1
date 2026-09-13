@@ -75,6 +75,12 @@ Sin dependencias (Node 18+). Deja en la carpeta de salida:
 Hay una pausa de 1,2 s entre descargas y reintentos con backoff ante errores
 de red: el endpoint es público y no conviene parecer un crawler.
 
+## Probarlo
+
+Guía completa con los tres casos de prueba (CDC real, inexistente y con dígito
+verificador roto), verificación del XML y solución de problemas:
+[`PRUEBA-PASO-A-PASO.md`](PRUEBA-PASO-A-PASO.md).
+
 ## Estructura
 
 | Archivo | Qué hace |
