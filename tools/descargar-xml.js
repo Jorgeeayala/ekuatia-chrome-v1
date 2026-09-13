@@ -43,6 +43,7 @@ function parsearArgumentos(argv) {
     else if (a === '--pausa') opts.pausa = Number(argv[++i]);
     else if (a === '--reintentos') opts.reintentos = Number(argv[++i]);
     else if (a === '--nombre-largo') opts.nombreCorto = false;
+    else if (a === '--debug') opts.debug = true;
     else if (a === '--ayuda' || a === '-h') opts.ayuda = true;
     else opts.cdcs.push(a);
   }
@@ -62,6 +63,9 @@ function ayuda() {
       '  --pausa          milisegundos entre descargas (por defecto: 1200)',
       '  --reintentos     reintentos ante errores de red o 5xx (por defecto: 3)',
       '  --nombre-largo   nombra el archivo como AAAA-MM-DD_RUC-numero_CDC.xml',
+      '  --debug          muestra estado, content-type y un trozo de la respuesta',
+      '                   cuando algo no llega como XML (para diagnosticar cambios',
+      '                   en el endpoint del portal)',
       '',
       'Deja en la carpeta de salida:',
       '  <CDC>.xml                 los XML descargados',
@@ -130,6 +134,17 @@ async function descargarUno(cdcLimpio, opts) {
       if (!RE_XML.test(texto)) {
         // El servidor responde 200 con un HTML vacío cuando el CDC no tiene
         // XML público: inexistente, no aprobado, rechazado o inutilizado.
+        if (opts.debug) {
+          var muestra = texto.replace(/\s+/g, ' ').trim().slice(0, 200);
+          console.log(
+            '    [debug] HTTP ' +
+              resp.status +
+              ' · ' +
+              (resp.headers && resp.headers.get ? resp.headers.get('content-type') : '?') +
+              ' · ' +
+              (muestra || '(respuesta vacía)')
+          );
+        }
         return { estado: 'no-encontrado', detalle: 'sin XML público' };
       }
 
