@@ -167,7 +167,9 @@ async function main() {
     if (fs.existsSync(crudo)) crudo = fs.readFileSync(crudo, 'utf8');
     captura = red.parsearCurl(crudo);
     if (!captura.url && !captura.cookie && !Object.keys(captura.headers).length) {
-      console.log('· no pude leer la captura de --curl (¿pegaste el "Copy as cURL" completo?)');
+      console.log('· no pude leer la captura de --curl: "' + opts.curl + '".');
+      console.log('  Revisá que sea el "Copy as cURL" completo y que el archivo se llame');
+      console.log('  captura-curl.txt (ojo con el Bloc de notas, que a veces agrega .txt de nuevo).');
     }
   }
 
