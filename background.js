@@ -35,9 +35,8 @@ var RE_XML = /^\s*(<\?xml|<rde|<rDE)/i;
  * sus cookies—, pero la sesión tiene que estar abierta.
  */
 var MOTIVO_SESION =
-  'HTTP 401 · el portal exige su sesión: abrí ' +
-  URL_CONSULTA +
-  ' y consultá ese CDC (con captcha); recién ahí el XML se puede descargar';
+  'El portal pide consultar ese CDC antes de dejarte bajar su XML: tocá «Portal» en ' +
+  'esa fila, resolvé el «No soy un robot» y volvé a tocar «XML».';
 
 /* ------------------------------- bandeja ---------------------------------- */
 
@@ -173,7 +172,8 @@ async function pedirXmlDesdeLaPagina(cdcLimpio) {
     });
     if (ejecucion && ejecucion[0] && ejecucion[0].result) salida = ejecucion[0].result;
   } catch (err) {
-    salida.texto = err && err.message ? err.message : String(err);
+    salida.estado = 0;
+    salida.texto = 'no se pudo ejecutar en la página: ' + (err && err.message ? err.message : err);
   } finally {
     if (creada) {
       try {
@@ -210,7 +210,10 @@ async function verificarXml(cdcLimpio) {
     if (desde.estado === 200) {
       return { ok: false, motivo: 'sin XML público (inexistente, rechazado o inutilizado)' };
     }
-    return { ok: false, sesion: true, motivo: MOTIVO_SESION };
+    var detallePagina = desde.estado
+      ? 'desde la página del portal: HTTP ' + desde.estado + ' «' + String(desde.texto).replace(/\s+/g, ' ').slice(0, 160) + '»'
+      : 'desde la página del portal: ' + String(desde.texto).slice(0, 160);
+    return { ok: false, sesion: true, motivo: MOTIVO_SESION, detalle: detallePagina };
   }
   if (!resp.ok) return { ok: false, motivo: 'HTTP ' + resp.status };
 
@@ -263,8 +266,14 @@ async function descargarXml(cdcLimpio) {
 
     if (!ver.ok) {
       await bandejaMarcar(cdcLimpio, ver.sesion ? 'error' : 'no-encontrado', ver.motivo);
-      if (ver.sesion) await anotarError('descarga rechazada por el portal', ver.motivo, cdcLimpio);
-      return { ok: false, cdc: cdcLimpio, motivo: ver.motivo, sesion: !!ver.sesion };
+      if (ver.sesion) {
+        await anotarError(
+          'el portal pide consultar el CDC antes de bajar su XML',
+          ver.motivo + '\n  ' + (ver.detalle || ''),
+          cdcLimpio
+        );
+      }
+      return { ok: false, cdc: cdcLimpio, motivo: ver.motivo, sesion: !!ver.sesion, detalle: ver.detalle };
     }
 
     var id = await guardarXml(cdcLimpio, ver.texto);

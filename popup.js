@@ -92,9 +92,15 @@ document.addEventListener('DOMContentLoaded', function () {
           estado.textContent = 'Descargando ' + formatearCdc(entrada.cdc) + '…';
           chrome.runtime.sendMessage({ tipo: 'descargar', cdc: entrada.cdc }, function (r) {
             if (!r) return;
-            estado.textContent = r.ok
-              ? 'Descargado ' + formatearCdc(entrada.cdc) + ' (' + Math.round(r.bytes / 1024) + ' KB)'
-              : 'Sin XML: ' + r.motivo;
+            if (r.ok) {
+              estado.textContent = 'Descargado ' + formatearCdc(entrada.cdc) + ' (' + Math.round(r.bytes / 1024) + ' KB)';
+            } else if (r.sesion) {
+              estado.textContent = r.motivo;
+              diag.style.display = 'block';
+              diag.textContent = 'Detalle técnico:\n  ' + (r.detalle || r.motivo);
+            } else {
+              estado.textContent = 'Sin XML: ' + r.motivo;
+            }
             recargar();
           });
         });
