@@ -438,14 +438,15 @@ async function main() {
   }
 
   function imprimir(fila, prefijo) {
+    var p = prefijo || '';
     if (fila.estado === 'descargado') {
-      console.log('✓ ' + fila.cdc + '  ' + (fila.bytes / 1024).toFixed(1) + ' KB  →  ' + fila.archivo);
+      console.log(p + '✓ ' + fila.cdc + '  ' + (fila.bytes / 1024).toFixed(1) + ' KB  →  ' + fila.archivo);
     } else if (fila.estado === 'no-encontrado') {
-      console.log('· ' + fila.cdc + '  sin XML público');
+      console.log(p + '· ' + fila.cdc + '  sin XML público');
     } else if (fila.estado === 'no-valido') {
-      console.log('✗ no válido     ' + fila.detalle);
+      console.log(p + '✗ no válido     ' + fila.detalle);
     } else {
-      console.log((prefijo || '! ') + fila.cdc + '  error: ' + (fila.detalle || ''));
+      console.log(p + '! ' + fila.cdc + '  error: ' + (fila.detalle || ''));
     }
   }
 

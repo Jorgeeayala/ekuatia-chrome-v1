@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rDE xmlns="http://ekuatia.set.gov.py/sifen/xsd">
+  <dId>01800975120007008007180822026080217723517894</dId>
+  <dFeEmiDE>2026-08-02T17:23:51</dFeEmiDE>
+  <gTimb><iTiDE>1</iTiDE></gTimb>
+  <gDatGralOpe>
+    <gEmis><dNomEmi>NEOMARKET SA</dNomEmi><dRucEm>80097512</dRucEm></gEmis>
+    <gDatRec><dNomRec>JORGE ESPINOLA</dNomRec></gDatRec>
+  </gDatGralOpe>
+  <gDtipDE>
+    <gCamItem><dCodInt>DKBLUE</dCodInt><dDesProSer>DKBLUE 33 LADIES SLIM</dDesProSer></gCamItem>
+    <gCamItem><dCodInt>HF129</dCodInt><dDesProSer>Cinto de cuero</dDesProSer></gCamItem>
+  </gDtipDE>
+  <gTotSub><dTotGralOpe>225000.00000000</dTotGralOpe><dTotIVA>20454.54550000</dTotIVA></gTotSub>
+  <Signature xmlns="http://www.w3.org/2000/09/xmldsig#">
+    <SignedInfo><SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/></SignedInfo>
+    <SignatureValue>Q2RlZmdoaWprbG1ub3A=</SignatureValue>
+  </Signature>
+</rDE>

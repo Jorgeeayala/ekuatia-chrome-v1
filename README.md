@@ -124,6 +124,16 @@ de red: el endpoint es público y no conviene parecer un crawler.
 
   y en otra terminal, con `--base-url http://127.0.0.1:8099`.
 
+## Cómo funciona y qué tan probado está
+
+- [`FLUJO.md`](FLUJO.md): el flujo completo, pieza por pieza, y la evaluación
+  honesta de funcionalidad (qué está probado con evidencia y qué no).
+- Autotest de todo, sin tocar el portal de la DNIT:
+
+  ```bash
+  node tools/pruebas/auto.js     # 28 pruebas: unidades + punta a punta contra el servidor falso
+  ```
+
 ## Estructura
 
 | Archivo | Qué hace |
@@ -136,6 +146,8 @@ de red: el endpoint es público y no conviene parecer un crawler.
 | `tools/diagnostico.js` | ocho sondas + veredicto del 401 (`diagnostico-401.txt`) |
 | `tools/red.js` | cabeceras de navegador, cookies y lector de "Copy as cURL" |
 | `tools/resumen-xml.js` | revisa los XML descargados (ítems, totales, firma) |
+| `tools/pruebas/auto.js` | autotest de todo el flujo (unidades + punta a punta) |
+| `FLUJO.md` | cómo funciona por dentro y qué está probado |
 | `tools/pruebas/mock-ekuatia.js` | servidor falso para probar sin red |
 | `DESCARGA-XML.md` | el endpoint, el 401, qué camino tomar y el plan B |
 

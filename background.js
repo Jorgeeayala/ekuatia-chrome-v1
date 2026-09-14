@@ -205,7 +205,7 @@ async function verificarXml(cdcLimpio) {
   if (resp.status === 401 || resp.status === 403) {
     var desde = await pedirXmlDesdeLaPagina(cdcLimpio);
     if (desde.estado === 200 && RE_XML.test(desde.texto)) {
-      return { ok: true, bytes: desde.texto.length, desdeLaPagina: true };
+      return { ok: true, bytes: desde.texto.length, texto: desde.texto, desdeLaPagina: true };
     }
     if (desde.estado === 200) {
       return { ok: false, motivo: 'sin XML público (inexistente, rechazado o inutilizado)' };
@@ -218,7 +218,42 @@ async function verificarXml(cdcLimpio) {
   if (!RE_XML.test(texto)) {
     return { ok: false, motivo: 'sin XML público (inexistente, rechazado o inutilizado)' };
   }
-  return { ok: true, bytes: texto.length };
+  return { ok: true, bytes: texto.length, texto: texto };
+}
+
+/** Hasta qué tamaño conviene guardar el texto ya validado (en vez de re-pedirlo). */
+var LIMITE_TEXTO_DIRECTO = 512 * 1024;
+
+/**
+ * Guarda en Descargas el XML que YA validamos.
+ *
+ * Guardar el texto que trajimos (en lugar de pedir la URL otra vez) evita dos
+ * cosas: que la segunda petición reciba el 401 del WAF y guarde la página de
+ * error, y que quede en disco algo distinto de lo que se verificó. Si el
+ * navegador rechazara la descarga del texto, se cae a bajarlo por URL.
+ */
+async function guardarXml(cdcLimpio, texto) {
+  var nombre = CARPETA_XML + '/' + cdcLimpio + '.xml';
+
+  if (texto && texto.length <= LIMITE_TEXTO_DIRECTO) {
+    try {
+      return await chrome.downloads.download({
+        url: 'data:application/xml;charset=utf-8,' + encodeURIComponent(texto),
+        filename: nombre,
+        conflictAction: 'overwrite',
+        saveAs: false,
+      });
+    } catch (err) {
+      /* se intenta por URL, más abajo */
+    }
+  }
+
+  return chrome.downloads.download({
+    url: URL_XML + cdcLimpio,
+    filename: nombre,
+    conflictAction: 'overwrite',
+    saveAs: false,
+  });
 }
 
 /** Descarga el XML de un CDC a la carpeta e-Kuatia/xml/. */
@@ -230,12 +265,7 @@ async function descargarXml(cdcLimpio) {
     return { ok: false, cdc: cdcLimpio, motivo: ver.motivo, sesion: !!ver.sesion };
   }
 
-  var id = await chrome.downloads.download({
-    url: URL_XML + cdcLimpio,
-    filename: CARPETA_XML + '/' + cdcLimpio + '.xml',
-    conflictAction: 'overwrite',
-    saveAs: false,
-  });
+  var id = await guardarXml(cdcLimpio, ver.texto);
 
   await bandejaMarcar(cdcLimpio, 'descargado');
   return { ok: true, cdc: cdcLimpio, downloadId: id, bytes: ver.bytes };
