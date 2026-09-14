@@ -1,78 +1,322 @@
-// Función para esperar que la pestaña termine de cargar
-async function esperarCargaCompleta(tabId) {
-  return new Promise((resolve) => {
-    chrome.tabs.onUpdated.addListener(function listener(updatedTabId, info) {
-      if (updatedTabId === tabId && info.status === "complete") {
-        chrome.tabs.onUpdated.removeListener(listener);
-        resolve();
-      }
-    });
-  });
+/* Service worker — "Descargar XML de e-Kuatia".
+ *
+ * Flujo único y directo:
+ *
+ *   CDC (selección, atajo o popup)
+ *     └─► validar: 44 dígitos + dígito verificador módulo 11
+ *          └─► GET https://ekuatia.set.gov.py/docs/documento-electronico-xml/<CDC>
+ *               └─► ¿la respuesta es XML?  sí → guardar en Descargas/e-Kuatia/xml/
+ *                                           no → marcar "sin XML público"
+ *
+ * Ojo: desde 2026 el endpoint ya no es anónimo. El XML viaja con la sesión que
+ * el portal abre al consultar el CDC, y sin esa sesión contesta 401. Por eso
+ * las peticiones van con credentials:'include' (usan las cookies del navegador):
+ * la extensión corre donde está la sesión. Igual conviene consultar el CDC una
+ * vez en la pantalla de consultas. Cuando el CDC no tiene XML público
+ * (inexistente, rechazado o inutilizado) responde 200 con un HTML vacío, así
+ * que la respuesta se valida antes de grabar. Ver DESCARGA-XML.md.
+ */
+
+importScripts('src/cdc.js');
+
+var URL_XML = 'https://ekuatia.set.gov.py/docs/documento-electronico-xml/';
+var URL_CONSULTA = 'https://ekuatia.set.gov.py/consultas/';
+var CARPETA_XML = 'e-Kuatia/xml';
+var PAUSA_DESCARGA_MS = 1200;
+var MAX_BANDEJA = 500;
+var RE_XML = /^\s*(<\?xml|<rde|<rDE)/i;
+
+/**
+ * Qué decir cuando el portal rechaza la descarga.
+ *
+ * Desde mediados de 2026 el endpoint del XML dejó de ser anónimo: contesta 401
+ * cuando la petición no trae la sesión que el propio portal abre al consultar
+ * el CDC (con captcha). La extensión va por el camino bueno —el navegador, con
+ * sus cookies—, pero la sesión tiene que estar abierta.
+ */
+var MOTIVO_SESION =
+  'HTTP 401 · el portal exige su sesión: abrí ' +
+  URL_CONSULTA +
+  ' y consultá ese CDC (con captcha); recién ahí el XML se puede descargar';
+
+/* ------------------------------- bandeja ---------------------------------- */
+
+async function bandejaLeer() {
+  var datos = await chrome.storage.local.get('bandeja');
+  return Array.isArray(datos.bandeja) ? datos.bandeja : [];
 }
 
-// Función principal para buscar CDC
-async function buscarCDC(texto) {
-  if (!texto) return;
+async function bandejaGuardar(bandeja) {
+  if (bandeja.length > MAX_BANDEJA) bandeja = bandeja.slice(-MAX_BANDEJA);
+  await chrome.storage.local.set({ bandeja: bandeja });
+}
 
-  let [targetTab] = await chrome.tabs.query({
-    url: "*://ekuatia.set.gov.py/*"
-  });
-
-  if (!targetTab) {
-    targetTab = await chrome.tabs.create({
-      url: "https://ekuatia.set.gov.py/consultas/"
-    });
-    await esperarCargaCompleta(targetTab.id);
+/** Agrega o actualiza un CDC, conservando el estado de descarga previo. */
+async function bandejaAgregar(cdcLimpio, extra) {
+  var bandeja = await bandejaLeer();
+  var idx = -1;
+  for (var i = 0; i < bandeja.length; i++) {
+    if (bandeja[i].cdc === cdcLimpio) idx = i;
   }
 
-  await chrome.tabs.update(targetTab.id, { active: true });
-  await chrome.windows.update(targetTab.windowId, { focused: true });
+  var entrada = idx !== -1 ? bandeja[idx] : { cdc: cdcLimpio, ts: Date.now() };
+  if (extra) {
+    for (var k in extra) {
+      if (Object.prototype.hasOwnProperty.call(extra, k)) entrada[k] = extra[k];
+    }
+  }
 
-  chrome.scripting.executeScript({
-    target: { tabId: targetTab.id },
-    func: (cdc) => {
-      function intentar() {
-        const input = document.querySelector("input"); // Cambiar selector si es necesario
-        if (input) {
-          input.value = cdc.replace(/\s+/g, '');
-          input.dispatchEvent(new Event("input", { bubbles: true }));
-          input.focus();
-        } else {
-          setTimeout(intentar, 100);
-        }
-      }
-      intentar();
-    },
-    args: [texto]
+  if (idx !== -1) bandeja[idx] = entrada;
+  else bandeja.push(entrada);
+
+  await bandejaGuardar(bandeja);
+  return bandeja;
+}
+
+async function bandejaMarcar(cdcLimpio, estadoXml, motivo) {
+  var bandeja = await bandejaLeer();
+  for (var i = 0; i < bandeja.length; i++) {
+    if (bandeja[i].cdc === cdcLimpio) {
+      bandeja[i].xml = estadoXml;
+      bandeja[i].xmlTs = Date.now();
+      bandeja[i].xmlMotivo = motivo || '';
+    }
+  }
+  await bandejaGuardar(bandeja);
+}
+
+/* -------------------------------- badge ----------------------------------- */
+
+function marcar(tabId, texto, color, titulo) {
+  try {
+    if (tabId != null) {
+      chrome.action.setBadgeText({ tabId: tabId, text: texto });
+      chrome.action.setBadgeBackgroundColor({ tabId: tabId, color: color });
+      chrome.action.setTitle({ tabId: tabId, title: titulo });
+    }
+  } catch (e) {
+    /* la pestaña pudo cerrarse entre una llamada y la otra */
+  }
+}
+
+/* --------------------------- descarga del XML ------------------------------ */
+
+/**
+ * Pide el XML y comprueba que realmente lo sea: el servidor responde 200 con
+ * un HTML vacío cuando el CDC no tiene XML público.
+ *
+ * `credentials: 'include'` es lo que hace que viaje la cookie de sesión del
+ * navegador: sin ella el portal contesta 401 (ver MOTIVO_SESION).
+ */
+async function verificarXml(cdcLimpio) {
+  var resp = await fetch(URL_XML + cdcLimpio, {
+    method: 'GET',
+    headers: { Accept: 'application/xml,text/xml,*/*;q=0.8', 'Accept-Language': 'es-PY,es;q=0.9' },
+    credentials: 'include',
+    redirect: 'follow',
+  });
+
+  if (resp.status === 401 || resp.status === 403) {
+    return { ok: false, sesion: true, motivo: MOTIVO_SESION };
+  }
+  if (!resp.ok) return { ok: false, motivo: 'HTTP ' + resp.status };
+
+  var texto = await resp.text();
+  if (!RE_XML.test(texto)) {
+    return { ok: false, motivo: 'sin XML público (inexistente, rechazado o inutilizado)' };
+  }
+  return { ok: true, bytes: texto.length };
+}
+
+/** Descarga el XML de un CDC a la carpeta e-Kuatia/xml/. */
+async function descargarXml(cdcLimpio) {
+  var ver = await verificarXml(cdcLimpio);
+
+  if (!ver.ok) {
+    await bandejaMarcar(cdcLimpio, ver.sesion ? 'error' : 'no-encontrado', ver.motivo);
+    return { ok: false, cdc: cdcLimpio, motivo: ver.motivo, sesion: !!ver.sesion };
+  }
+
+  var id = await chrome.downloads.download({
+    url: URL_XML + cdcLimpio,
+    filename: CARPETA_XML + '/' + cdcLimpio + '.xml',
+    conflictAction: 'overwrite',
+    saveAs: false,
+  });
+
+  await bandejaMarcar(cdcLimpio, 'descargado');
+  return { ok: true, cdc: cdcLimpio, downloadId: id, bytes: ver.bytes };
+}
+
+function avisarProgreso(mensaje) {
+  chrome.runtime.sendMessage(mensaje).catch(function () {
+    /* el popup puede estar cerrado: no importa */
   });
 }
 
-// Crear menú contextual
-chrome.runtime.onInstalled.addListener(() => {
+/** Descarga una lista de CDC, de a uno y con pausa. Avisa el avance. */
+async function descargarVarios(cdcs) {
+  var resultados = { descargado: 0, 'no-encontrado': 0, error: 0 };
+
+  for (var i = 0; i < cdcs.length; i++) {
+    var cdcLimpio = cdcs[i];
+    avisarProgreso({ tipo: 'progreso', actual: i + 1, total: cdcs.length, cdc: cdcLimpio });
+
+    try {
+      var r = await descargarXml(cdcLimpio);
+      if (r.ok) resultados.descargado++;
+      else if (r.sesion) resultados.error++;
+      else resultados['no-encontrado']++;
+    } catch (err) {
+      resultados.error++;
+      await bandejaMarcar(cdcLimpio, 'error');
+    }
+
+    if (i < cdcs.length - 1) {
+      await new Promise(function (res) {
+        setTimeout(res, PAUSA_DESCARGA_MS);
+      });
+    }
+  }
+
+  avisarProgreso({ tipo: 'progreso', fin: true, total: cdcs.length, resultados: resultados });
+  return resultados;
+}
+
+/* --------------------------------- flujo ---------------------------------- */
+
+/** Punto de entrada común: normaliza y valida antes de cualquier cosa. */
+function prepararCdc(texto) {
+  var cdcLimpio = extraerCdc(texto);
+  if (!cdcLimpio) return { error: 'No se encontró un CDC de 44 dígitos en la selección' };
+  if (!validarCdc(cdcLimpio)) {
+    return { error: 'CDC inválido: ' + formatearCdc(cdcLimpio) + ' (dígito verificador)' };
+  }
+  return { cdc: cdcLimpio, analisis: analizarCdc(cdcLimpio) };
+}
+
+/** Guarda el CDC en la bandeja con sus datos ya decodificados. */
+async function registrar(cdcLimpio) {
+  var a = analizarCdc(cdcLimpio);
+  return bandejaAgregar(cdcLimpio, {
+    tipoDocumento: a.tipoDocumentoNombre,
+    rucEmisor: a.rucEmisor + '-' + a.dvRucEmisor,
+    numero: a.establecimiento + '-' + a.puntoExpedicion + '-' + a.numeroDocumento,
+    fechaEmision: a.fechaEmision,
+  });
+}
+
+/** Flujo completo desde un texto que contiene (o debería contener) un CDC. */
+async function descargarDesdeTexto(texto) {
+  var prep = prepararCdc(texto);
+  if (prep.error) {
+    marcar(null, '!', '#b91c1c', prep.error);
+    return { ok: false, motivo: prep.error };
+  }
+
+  await registrar(prep.cdc);
+
+  try {
+    var r = await descargarXml(prep.cdc);
+    if (r.ok) {
+      marcar(null, '✓', '#15803d', 'XML descargado: ' + formatearCdc(prep.cdc));
+    } else if (r.sesion) {
+      marcar(null, '!', '#b91c1c', r.motivo);
+    } else {
+      marcar(null, '·', '#a16207', formatearCdc(prep.cdc) + ': ' + r.motivo);
+    }
+    return r;
+  } catch (err) {
+    await bandejaMarcar(prep.cdc, 'error');
+    marcar(null, '!', '#b91c1c', 'Error al descargar: ' + err.message);
+    return { ok: false, cdc: prep.cdc, motivo: err.message };
+  }
+}
+
+/** Lee el texto seleccionado en la pestaña activa (para los atajos). */
+async function textoSeleccionado() {
+  var tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tabs.length) return '';
+
+  try {
+    var ejecucion = await chrome.scripting.executeScript({
+      target: { tabId: tabs[0].id },
+      func: function () {
+        return window.getSelection().toString();
+      },
+    });
+    return ejecucion && ejecucion[0] ? ejecucion[0].result : '';
+  } catch (err) {
+    // Pestaña especial (chrome://, Web Store, visor de PDF): no se puede
+    // inyectar. En ese caso conviene usar el menú contextual, que trae la
+    // selección sin necesidad de inyectar nada.
+    marcar(null, '!', '#b91c1c', 'No se pudo leer la selección en esta pestaña');
+    return '';
+  }
+}
+
+/* ------------------------------- mensajería -------------------------------- */
+
+chrome.runtime.onMessage.addListener(function (msg, sender, responder) {
+  if (!msg) return false;
+
+  if (msg.tipo === 'agregar') {
+    var prep = prepararCdc(msg.cdc);
+    if (prep.error) {
+      responder({ ok: false, motivo: prep.error });
+      return true;
+    }
+    registrar(prep.cdc).then(function () {
+      responder({ ok: true });
+    });
+    return true;
+  }
+
+  if (msg.tipo === 'descargar') {
+    descargarXml(msg.cdc).then(function (r) {
+      responder(r);
+    });
+    return true;
+  }
+
+  if (msg.tipo === 'descargar-todos') {
+    chrome.storage.local.get('bandeja', function (datos) {
+      var bandeja = Array.isArray(datos.bandeja) ? datos.bandeja : [];
+      var objetivo = msg.soloPendientes
+        ? bandeja.filter(function (e) {
+            return e.xml !== 'descargado';
+          })
+        : bandeja;
+      descargarVarios(
+        objetivo.map(function (e) {
+          return e.cdc;
+        })
+      ).then(function (resultados) {
+        responder({ ok: true, resultados: resultados });
+      });
+    });
+    return true;
+  }
+
+  return false;
+});
+
+/* ------------------------------- entradas ---------------------------------- */
+
+chrome.runtime.onInstalled.addListener(function () {
   chrome.contextMenus.create({
-    id: "buscarCDC",
-    title: "Buscar CDC en e-Kuatia",
-    contexts: ["selection"]
+    id: 'descargarXml',
+    title: 'Descargar XML del CDC (e-Kuatia)',
+    contexts: ['selection'],
   });
 });
 
-// Click derecho
-chrome.contextMenus.onClicked.addListener((info) => {
-  if (info.menuItemId === "buscarCDC") {
-    buscarCDC(info.selectionText);
-  }
+chrome.contextMenus.onClicked.addListener(function (info) {
+  if (info.menuItemId === 'descargarXml') descargarDesdeTexto(info.selectionText);
 });
 
-// Hotkey Alt+C
-chrome.commands.onCommand.addListener(async (command) => {
-  if (command === "buscar_cdc") {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      func: () => window.getSelection().toString(),
-    }, (selection) => {
-      const texto = selection[0].result;
-      buscarCDC(texto);
-    });
-  }
+chrome.commands.onCommand.addListener(async function (command) {
+  if (command !== 'descargar_xml' && command !== 'descargar_xml_alt') return;
+  var texto = await textoSeleccionado();
+  if (texto) await descargarDesdeTexto(texto);
 });

@@ -1,18 +1,29 @@
 {
   "manifest_version": 3,
-  "name": "Buscar CDC en e-Kuatia",
-  "version": "1.0",
-  "permissions": ["contextMenus", "tabs", "scripting", "storage"],
+  "name": "Descargar XML de e-Kuatia (CDC)",
+  "version": "1.4",
+  "description": "Descarga el XML de comprobantes electrónicos de e-Kuatia (DNIT Paraguay) desde el CDC, reutilizando la sesión del navegador.",
+  "permissions": ["contextMenus", "tabs", "scripting", "activeTab", "storage", "downloads"],
   "host_permissions": ["https://ekuatia.set.gov.py/*"],
   "background": {
     "service_worker": "background.js"
   },
+  "action": {
+    "default_title": "Descargar XML de e-Kuatia (CDC)",
+    "default_popup": "popup.html"
+  },
   "commands": {
-    "buscar_cdc": {
+    "descargar_xml": {
+      "suggested_key": {
+        "default": "Alt+X"
+      },
+      "description": "Descargar el XML del CDC seleccionado"
+    },
+    "descargar_xml_alt": {
       "suggested_key": {
         "default": "Alt+C"
       },
-      "description": "Buscar el CDC seleccionado en e-Kuatia"
+      "description": "Descargar el XML del CDC seleccionado (atajo alternativo)"
     }
   }
 }

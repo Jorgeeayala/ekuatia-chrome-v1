@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <title>CDC — e-Kuatia</title>
+    <style>
+      body {
+        width: 380px;
+        margin: 0;
+        padding: 12px;
+        font: 13px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        color: #111827;
+      }
+      h1 {
+        font-size: 14px;
+        margin: 0 0 8px;
+      }
+      .fila {
+        display: flex;
+        gap: 6px;
+        margin-bottom: 8px;
+      }
+      input {
+        flex: 1;
+        font: inherit;
+        padding: 6px 8px;
+        border: 1px solid #d1d5db;
+        border-radius: 6px;
+      }
+      button {
+        font: inherit;
+        border: 0;
+        border-radius: 6px;
+        padding: 6px 10px;
+        cursor: pointer;
+        background: #2563eb;
+        color: #fff;
+        white-space: nowrap;
+      }
+      button.secundario {
+        background: #e5e7eb;
+        color: #111827;
+      }
+      button.chico {
+        padding: 3px 7px;
+        font-size: 12px;
+      }
+      ul {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        max-height: 280px;
+        overflow: auto;
+      }
+      li {
+        border-top: 1px solid #e5e7eb;
+        padding: 6px 0;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      li .datos {
+        flex: 1;
+        min-width: 0;
+      }
+      li code {
+        font-size: 11px;
+        color: #1d4ed8;
+        word-break: break-all;
+      }
+      .meta {
+        color: #6b7280;
+        font-size: 11px;
+      }
+      .chip {
+        font-size: 10px;
+        border-radius: 999px;
+        padding: 2px 7px;
+        background: #f3f4f6;
+        color: #374151;
+        white-space: nowrap;
+      }
+      .chip.ok {
+        background: #dcfce7;
+        color: #15803d;
+      }
+      .chip.no {
+        background: #fef3c7;
+        color: #a16207;
+      }
+      .chip.err {
+        background: #fee2e2;
+        color: #b91c1c;
+      }
+      .vacio,
+      .nota {
+        color: #6b7280;
+        font-size: 11px;
+      }
+      .nota {
+        margin-top: 10px;
+        padding-top: 8px;
+        border-top: 1px solid #e5e7eb;
+      }
+      #estado {
+        min-height: 16px;
+        margin-bottom: 6px;
+        font-size: 12px;
+        color: #374151;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>CDC — e-Kuatia</h1>
+
+    <div class="fila">
+      <input id="cdc" placeholder="Pegá un CDC (44 dígitos)" />
+      <button id="agregar">Agregar</button>
+    </div>
+
+    <div class="fila">
+      <button id="descargarTodos">Descargar XML</button>
+      <button id="descargarPendientes" class="secundario">Sólo pendientes</button>
+      <button id="copiar" class="secundario">Copiar</button>
+      <button id="limpiar" class="secundario">Limpiar</button>
+    </div>
+
+    <div id="estado"></div>
+    <ul id="lista"></ul>
+
+    <p class="nota">
+      Los XML se guardan en <b>Descargas/e-Kuatia/xml/</b>, uno por CDC. Si el
+      portal pide consultar el comprobante primero, tocá <b>Portal</b> en esa
+      fila, resolvé el captcha y volvé a tocar <b>XML</b>. Para lotes grandes,
+      el script de <code>tools/descargar-xml.js</code>.
+    </p>
+
+    <script src="src/cdc.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>
