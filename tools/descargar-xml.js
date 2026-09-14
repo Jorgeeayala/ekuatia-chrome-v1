@@ -46,6 +46,8 @@ function parsearArgumentos(argv) {
     base: null,
     curl: null,
     cookie: null,
+    segundaPasada: true,
+    pausaFallo: 10000,
     headers: [],
     cdcs: [],
   };
@@ -55,6 +57,8 @@ function parsearArgumentos(argv) {
     if (a === '--entrada' || a === '-i') opts.entrada = argv[++i];
     else if (a === '--salida' || a === '-o') opts.salida = argv[++i];
     else if (a === '--pausa') opts.pausa = Number(argv[++i]);
+    else if (a === '--pausa-fallo') opts.pausaFallo = Number(argv[++i]);
+    else if (a === '--sin-segunda-pasada') opts.segundaPasada = false;
     else if (a === '--reintentos') opts.reintentos = Number(argv[++i]);
     else if (a === '--nombre-largo') opts.nombreCorto = false;
     else if (a === '--debug') opts.debug = true;
@@ -85,6 +89,8 @@ function ayuda() {
       '  --entrada, -i     archivo con un CDC por línea (acepta espacios, puntos o guiones)',
       '  --salida,  -o     carpeta de destino (por defecto: ./xml)',
       '  --pausa           milisegundos entre descargas (por defecto: 1200)',
+      '  --pausa-fallo     espera antes de reintentar los que fallaron (por defecto: 10000)',
+      '  --sin-segunda-pasada  no reintenta al final los CDC que quedaron con 401/red',
       '  --reintentos      reintentos ante errores de red, 5xx y 429 (por defecto: 3)',
       '  --nombre-largo    nombra el archivo como AAAA-MM-DD_RUC-numero_CDC.xml',
       '  --debug           muestra estado, cabeceras y un trozo de la respuesta',
@@ -417,12 +423,33 @@ async function main() {
   }
   if (opts.warmup && !Object.keys(ctx.jar).length) await abrirSesion(ctx, opts);
 
-  var resumen = [];
-  var noEncontrados = [];
-  var noValidos = [];
+  var filas = []; // { cdc, estado, bytes, archivo, detalle }
+  var indice = Object.create(null);
   var vistos = Object.create(null);
-  var totales = { descargado: 0, 'no-encontrado': 0, error: 0, 'no-valido': 0, duplicado: 0 };
-  var con401 = 0;
+
+  /** Anota el resultado de un CDC (o lo reemplaza si ya estaba anotado). */
+  function anotar(fila, prefijo) {
+    if (indice[fila.cdc]) filas[indice[fila.cdc] - 1] = fila;
+    else {
+      filas.push(fila);
+      indice[fila.cdc] = filas.length;
+    }
+    if (prefijo !== false) imprimir(fila, prefijo);
+  }
+
+  function imprimir(fila, prefijo) {
+    if (fila.estado === 'descargado') {
+      console.log('✓ ' + fila.cdc + '  ' + (fila.bytes / 1024).toFixed(1) + ' KB  →  ' + fila.archivo);
+    } else if (fila.estado === 'no-encontrado') {
+      console.log('· ' + fila.cdc + '  sin XML público');
+    } else if (fila.estado === 'no-valido') {
+      console.log('✗ no válido     ' + fila.detalle);
+    } else {
+      console.log((prefijo || '! ') + fila.cdc + '  error: ' + (fila.detalle || ''));
+    }
+  }
+
+  /* ------------------------------ primera pasada --------------------------- */
 
   for (var i = 0; i < lineas.length; i++) {
     var linea = lineas[i].trim();
@@ -430,37 +457,73 @@ async function main() {
 
     var cdcLimpio = cdc.extraerCdc(linea);
     if (!cdcLimpio || !cdc.validarCdc(cdcLimpio)) {
-      noValidos.push(linea);
-      totales['no-valido']++;
-      resumen.push([linea, 'no-valido', 0, '']);
-      console.log('✗ no válido     ' + linea);
+      anotar({ cdc: linea, estado: 'no-valido', bytes: 0, archivo: '', detalle: linea });
       continue;
     }
-    if (vistos[cdcLimpio]) {
-      totales.duplicado++;
-      continue;
-    }
+    if (vistos[cdcLimpio]) continue;
     vistos[cdcLimpio] = true;
 
     var r = await descargarUno(cdcLimpio, opts, ctx);
-    totales[r.estado] = (totales[r.estado] || 0) + 1;
-
-    if (r.estado === 'descargado') {
-      console.log('✓ ' + cdcLimpio + '  ' + (r.bytes / 1024).toFixed(1) + ' KB  →  ' + r.archivo);
-      resumen.push([cdcLimpio, 'descargado', r.bytes, r.archivo]);
-    } else if (r.estado === 'no-encontrado') {
-      console.log('· ' + cdcLimpio + '  sin XML público');
-      noEncontrados.push(cdcLimpio);
-      resumen.push([cdcLimpio, 'no-encontrado', 0, '']);
-    } else {
-      if (/HTTP 40[13]/.test(r.detalle)) con401++;
-      console.log('! ' + cdcLimpio + '  error: ' + r.detalle);
-      if (opts.debug && r.motivo) console.log('    [debug] el servidor dijo: ' + r.motivo);
-      resumen.push([cdcLimpio, 'error', 0, r.detalle || '']);
-    }
+    anotar({
+      cdc: cdcLimpio,
+      estado: r.estado,
+      bytes: r.bytes || 0,
+      archivo: r.archivo || '',
+      detalle: r.detalle || '',
+    });
+    if (opts.debug && r.motivo) console.log('    [debug] el servidor dijo: ' + r.motivo);
 
     if (i < lineas.length - 1) await red.esperar(opts.pausa);
   }
+
+  /* ------------------------------ segunda pasada --------------------------- */
+
+  // El portal (detrás de un WAF) rechaza de a ráfagas: 401/403/5xx que después
+  // pasan solos. Antes de dar por perdido un CDC se espera un poco y se
+  // reintenta una vez más, sólo para los que fallaron.
+  var transitorios = filas.filter(function (f) {
+    return f.estado === 'error' && /^(HTTP 40[13]|HTTP 5\d\d|HTTP 429|fetch failed|.*socket.*|.*ECONN|.*ETIMEDOUT)/i.test(f.detalle || '');
+  });
+
+  if (transitorios.length && opts.segundaPasada) {
+    console.log('');
+    console.log(
+      '· ' + transitorios.length + ' CDC quedaron con error transitorio (401/red). ' +
+        'Espero ' + Math.round(opts.pausaFallo / 1000) + ' s y los reintento una vez…'
+    );
+    await red.esperar(opts.pausaFallo);
+
+    for (var j = 0; j < transitorios.length; j++) {
+      var cdcRe = transitorios[j].cdc;
+      var rr = await descargarUno(cdcRe, opts, ctx);
+      anotar(
+        {
+          cdc: cdcRe,
+          estado: rr.estado,
+          bytes: rr.bytes || 0,
+          archivo: rr.archivo || '',
+          detalle: rr.detalle || '',
+        },
+        '  (2ª pasada) '
+      );
+      if (opts.debug && rr.motivo) console.log('    [debug] el servidor dijo: ' + rr.motivo);
+      if (j < transitorios.length - 1) await red.esperar(opts.pausa);
+    }
+  }
+
+  /* --------------------------------- salida -------------------------------- */
+
+  var totales = { descargado: 0, 'no-encontrado': 0, error: 0, 'no-valido': 0 };
+  var noEncontrados = [];
+  var noValidos = [];
+  var conFreno = 0;
+
+  filas.forEach(function (f) {
+    totales[f.estado] = (totales[f.estado] || 0) + 1;
+    if (f.estado === 'no-encontrado') noEncontrados.push(f.cdc);
+    if (f.estado === 'no-valido') noValidos.push(f.detalle);
+    if (f.estado === 'error' && /HTTP 40[13]/.test(f.detalle || '')) conFreno++;
+  });
 
   if (noEncontrados.length) {
     fs.writeFileSync(
@@ -476,8 +539,8 @@ async function main() {
     path.join(opts.salida, 'resumen.csv'),
     ['cdc,estado,bytes,archivo']
       .concat(
-        resumen.map(function (fila) {
-          return [fila[0], fila[1], fila[2], '"' + String(fila[3]).replace(/"/g, '""') + '"'].join(
+        filas.map(function (fila) {
+          return [fila.cdc, fila.estado, fila.bytes, '"' + String(fila.archivo || fila.detalle || '').replace(/"/g, '""') + '"'].join(
             ','
           );
         })
@@ -489,18 +552,18 @@ async function main() {
   console.log('');
   console.log(
     'Descargados: ' + totales.descargado + ' | sin XML público: ' + totales['no-encontrado'] +
-      ' | con error: ' + (totales.error || 0) + ' | no válidos: ' + totales['no-valido'] +
-      (totales.duplicado ? ' | duplicados: ' + totales.duplicado : '')
+      ' | con error: ' + (totales.error || 0) + ' | no válidos: ' + totales['no-valido']
   );
 
-  if (con401) {
+  if (conFreno) {
     console.log('');
     console.log(
-      'Aviso: el portal respondió 401/403 a ' + con401 + ' CDC. Suele ser un freno temporal (el\n' +
-        'sitio está detrás de un WAF): probá de nuevo con una pausa más larga,\n' +
-        '  node tools/descargar-xml.js --entrada ' + (opts.entrada || 'cdcs.txt') + ' --salida ' + opts.salida + ' --pausa 4000\n' +
-        'y, si sigue, mirá DESCARGA-XML.md → "Si da 401".\n' +
-        'Diagnóstico:  node tools/diagnostico.js --entrada ' + (opts.entrada || 'cdcs.txt')
+      'Aviso: ' + conFreno + ' CDC siguen con 401 después de reintentar. Es el portal frenando por\n' +
+        'rato (WAF), no un problema de tus comprobantes: esperá un minuto y volvé a correr\n' +
+        'el mismo comando (los ya descargados se vuelven a pedir sin problema), o probá con\n' +
+        'más aire entre pedidos:\n' +
+        '  node tools/descargar-xml.js --entrada ' + (opts.entrada || 'cdcs.txt') +
+        ' --salida ' + opts.salida + ' --pausa 5000'
     );
   }
 

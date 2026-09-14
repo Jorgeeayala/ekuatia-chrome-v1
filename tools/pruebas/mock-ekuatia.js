@@ -10,8 +10,9 @@
  *   publico   el XML se sirve sin sesión (el caso viejo, cuando todo andaba)
  *   cookie    el XML se sirve con la cookie que deja /consultas/ (warmup)
  *   consulta  además exige que la sesión haya consultado ese CDC (captcha)
- *   gate-cdc  sirve SÓLO el CDC que figura como consultado y 401 para los demás,
- *             que es el comportamiento observado en el portal (14/09/2026)
+ *   gate-cdc  sirve SÓLO el CDC que figura como consultado y 401 para los demás
+ *   flaky     la primera petición de cada CDC da 401 y la segunda funciona:
+ *             reproduce los rechazos por ráfaga del WAF del portal
  *
  * Después:
  *   node tools/descargar-xml.js --base-url http://127.0.0.1:8099 <CDC>
@@ -30,6 +31,7 @@ var CDC_SIN_XML = '01444444017001001001452822017012515873260988';
 var PAGINA_VACIA = '<!doctype html><html><head></head><body></body></html>';
 
 var sesiones = Object.create(null); // id -> { consultados: { cdc: true } }
+var intentos = Object.create(null); // cdc -> cuántas veces se pidió (modo flaky)
 
 function xmlDe(cdc) {
   return (
@@ -105,12 +107,19 @@ var servidor = http.createServer(function (req, res) {
     if (MODO === 'gate-cdc' && cdcPedido !== CDC_BUENO) {
       return json(res, 401, { mensaje: 'Tiempo de sesión finalizado. Realice una nueva consulta para la descarga.' });
     }
-    if (MODO !== 'publico' && MODO !== 'gate-cdc' && !(id && sesiones[id])) {
+    if (MODO !== 'publico' && MODO !== 'gate-cdc' && MODO !== 'flaky' && !(id && sesiones[id])) {
       return json(res, 401, { mensaje: 'Sesión no iniciada. Realice una nueva consulta para la descarga.' });
     }
     if (MODO === 'consulta' && !(sesiones[id] && sesiones[id].consultados[cdcPedido])) {
       return json(res, 401, { mensaje: 'Tiempo de sesión finalizado. Realice una nueva consulta para la descarga.' });
     }
+    if (MODO === 'flaky') {
+      intentos[cdcPedido] = (intentos[cdcPedido] || 0) + 1;
+      if (intentos[cdcPedido] === 1) {
+        return json(res, 401, { mensaje: 'Tiempo de sesión finalizado. Realice una nueva consulta para la descarga.' });
+      }
+    }
+
     // Un CDC sin XML público: 200 con la página vacía (como el portal real).
     if (cdcPedido === CDC_SIN_XML) return html(res, 200, PAGINA_VACIA);
 
