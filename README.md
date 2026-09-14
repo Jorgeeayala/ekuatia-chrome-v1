@@ -108,6 +108,8 @@ de red: el endpoint es público y no conviene parecer un crawler.
 
 ## Probarlo
 
+- **Guía paso a paso para bajar tus XML con el portal** (Windows, sin omitir
+  pasos): [`COMO-DESCARGAR-LOS-XML.md`](COMO-DESCARGAR-LOS-XML.md).
 - Guía paso a paso con los tres casos de prueba (CDC real, inexistente y con
   dígito verificador roto), verificación del XML y solución de problemas:
   [`PRUEBA-PASO-A-PASO.md`](PRUEBA-PASO-A-PASO.md).
@@ -133,6 +135,7 @@ de red: el endpoint es público y no conviene parecer un crawler.
 | `tools/descargar-xml.js` | descarga en lote desde la línea de comandos |
 | `tools/diagnostico.js` | ocho sondas + veredicto del 401 (`diagnostico-401.txt`) |
 | `tools/red.js` | cabeceras de navegador, cookies y lector de "Copy as cURL" |
+| `tools/resumen-xml.js` | revisa los XML descargados (ítems, totales, firma) |
 | `tools/pruebas/mock-ekuatia.js` | servidor falso para probar sin red |
 | `DESCARGA-XML.md` | el endpoint, el 401, qué camino tomar y el plan B |
 

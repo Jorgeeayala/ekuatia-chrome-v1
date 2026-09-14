@@ -101,12 +101,98 @@ function marcar(tabId, texto, color, titulo) {
 
 /* --------------------------- descarga del XML ------------------------------ */
 
+/** Espera a que una pestaña termine de cargar (o se vence el plazo). */
+function esperarCarga(tabId, ms) {
+  return new Promise(function (resolver) {
+    var terminado = false;
+    function terminar(ok) {
+      if (terminado) return;
+      terminado = true;
+      chrome.tabs.onUpdated.removeListener(escuchar);
+      clearTimeout(temporizador);
+      resolver(ok);
+    }
+    function escuchar(id, info) {
+      if (id === tabId && info.status === 'complete') terminar(true);
+    }
+    var temporizador = setTimeout(function () {
+      terminar(false);
+    }, ms || 8000);
+    chrome.tabs.onUpdated.addListener(escuchar);
+  });
+}
+
+/**
+ * Pide el XML desde la propia página del portal (content script).
+ *
+ * Es el plan B del fetch del service worker: ahí la petición sale con el origen
+ * de ekuatia.set.gov.py, así que la cookie de sesión viaja siempre, sin las
+ * restricciones de SameSite que puede aplicar el navegador a una petición
+ * hecha desde la extensión. Si no hay ninguna pestaña del portal abierta, se
+ * abre una en segundo plano y se cierra al terminar.
+ */
+async function pedirXmlDesdeLaPagina(cdcLimpio) {
+  var pestañas = [];
+  try {
+    pestañas = await chrome.tabs.query({ url: 'https://ekuatia.set.gov.py/*' });
+  } catch (err) {
+    pestañas = [];
+  }
+
+  var pestaña = null;
+  for (var i = 0; i < pestañas.length; i++) {
+    if (/\/consultas\/?$/.test(pestañas[i].url || '') || /\/consultas\//.test(pestañas[i].url || '')) {
+      pestaña = pestañas[i];
+    }
+  }
+  if (!pestaña && pestañas.length) pestaña = pestañas[0];
+
+  var creada = false;
+  if (!pestaña) {
+    pestaña = await chrome.tabs.create({ url: URL_CONSULTA + cdcLimpio, active: false });
+    creada = true;
+    await esperarCarga(pestaña.id, 10000);
+  }
+
+  var salida = { estado: 0, texto: '' };
+  try {
+    var ejecucion = await chrome.scripting.executeScript({
+      target: { tabId: pestaña.id },
+      func: function (url) {
+        return fetch(url, { credentials: 'include' })
+          .then(function (r) {
+            return r.text().then(function (t) {
+              return { estado: r.status, texto: t };
+            });
+          })
+          .catch(function (e) {
+            return { estado: 0, texto: String(e && e.message ? e.message : e) };
+          });
+      },
+      args: [URL_XML + cdcLimpio],
+    });
+    if (ejecucion && ejecucion[0] && ejecucion[0].result) salida = ejecucion[0].result;
+  } catch (err) {
+    salida.texto = err && err.message ? err.message : String(err);
+  } finally {
+    if (creada) {
+      try {
+        await chrome.tabs.remove(pestaña.id);
+      } catch (err) {
+        /* la pestaña ya no está: no importa */
+      }
+    }
+  }
+  return salida;
+}
+
 /**
  * Pide el XML y comprueba que realmente lo sea: el servidor responde 200 con
  * un HTML vacío cuando el CDC no tiene XML público.
  *
  * `credentials: 'include'` es lo que hace que viaje la cookie de sesión del
- * navegador: sin ella el portal contesta 401 (ver MOTIVO_SESION).
+ * navegador: sin ella el portal contesta 401 (ver MOTIVO_SESION). Si aun así
+ * contesta 401, se reintenta desde la página del portal.
  */
 async function verificarXml(cdcLimpio) {
   var resp = await fetch(URL_XML + cdcLimpio, {
@@ -117,6 +203,13 @@ async function verificarXml(cdcLimpio) {
   });
 
   if (resp.status === 401 || resp.status === 403) {
+    var desde = await pedirXmlDesdeLaPagina(cdcLimpio);
+    if (desde.estado === 200 && RE_XML.test(desde.texto)) {
+      return { ok: true, bytes: desde.texto.length, desdeLaPagina: true };
+    }
+    if (desde.estado === 200) {
+      return { ok: false, motivo: 'sin XML público (inexistente, rechazado o inutilizado)' };
+    }
     return { ok: false, sesion: true, motivo: MOTIVO_SESION };
   }
   if (!resp.ok) return { ok: false, motivo: 'HTTP ' + resp.status };
