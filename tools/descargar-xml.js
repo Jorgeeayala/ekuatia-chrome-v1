@@ -85,7 +85,7 @@ function ayuda() {
       '  --entrada, -i     archivo con un CDC por línea (acepta espacios, puntos o guiones)',
       '  --salida,  -o     carpeta de destino (por defecto: ./xml)',
       '  --pausa           milisegundos entre descargas (por defecto: 1200)',
-      '  --reintentos      reintentos ante errores de red o 5xx (por defecto: 3)',
+      '  --reintentos      reintentos ante errores de red, 5xx y 429 (por defecto: 3)',
       '  --nombre-largo    nombra el archivo como AAAA-MM-DD_RUC-numero_CDC.xml',
       '  --debug           muestra estado, cabeceras y un trozo de la respuesta',
       '',
@@ -343,16 +343,27 @@ async function descargarUno(cdcLimpio, opts, ctx) {
       var texto = await resp.text();
 
       // 401/403: o falta la sesión, o el portal nos está frenando antes de
-      // llegar a la aplicación. Se abre sesión una vez y se reintenta.
+      // llegar a la aplicación (el sitio está detrás de un WAF F5/Dynatrace,
+      // y el rechazo suele ser temporal). Se abre sesión una vez, y si vuelve
+      // a pasar se espera más y se reintenta antes de darlo por perdido.
       if (resp.status === 401 || resp.status === 403) {
         depurar('rechazo', resp, texto, opts);
         if (opts.warmup && !ctx.warmupHecho) {
           await abrirSesion(ctx, opts);
           continue;
         }
+        if (intento < opts.reintentos) {
+          var esperaFreno = 3000 * intento;
+          console.log(
+            '· HTTP ' + resp.status + ': puede ser un freno temporal del portal; ' +
+              'reintento en ' + esperaFreno / 1000 + ' s…'
+          );
+          await red.esperar(esperaFreno);
+          continue;
+        }
         return {
           estado: 'error',
-          detalle: 'HTTP ' + resp.status + ' (sesión)',
+          detalle: 'HTTP ' + resp.status + ' (sesión o freno del portal)',
           motivo: red.recortar(texto, 200),
         };
       }
@@ -485,11 +496,11 @@ async function main() {
   if (con401) {
     console.log('');
     console.log(
-      'Aviso: el portal respondió 401/403 a ' + con401 + ' CDC. Con las cabeceras de navegador y\n' +
-        'el warmup ya se probó lo automático; si sigue igual, la descarga depende de la sesión\n' +
-        'que el portal abre al consultar el CDC en el navegador. Diagnóstico y opciones:\n' +
-        '  node tools/diagnostico.js --entrada ' + (opts.entrada || 'cdcs.txt') + ' --debug\n' +
-        '  (la explicación completa está en DESCARGA-XML.md → "Si da 401")'
+      'Aviso: el portal respondió 401/403 a ' + con401 + ' CDC. Suele ser un freno temporal (el\n' +
+        'sitio está detrás de un WAF): probá de nuevo con una pausa más larga,\n' +
+        '  node tools/descargar-xml.js --entrada ' + (opts.entrada || 'cdcs.txt') + ' --salida ' + opts.salida + ' --pausa 4000\n' +
+        'y, si sigue, mirá DESCARGA-XML.md → "Si da 401".\n' +
+        'Diagnóstico:  node tools/diagnostico.js --entrada ' + (opts.entrada || 'cdcs.txt')
     );
   }
 

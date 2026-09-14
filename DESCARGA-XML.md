@@ -28,10 +28,35 @@ CDC sin XML dejarían archivos `.xml` vacíos mezclados con los buenos.
 
 ## Si da 401 (el error `error: HTTP 401`)
 
-Un 401 significa: *el portal no te reconoce como una petición de su propia
-pantalla de consultas*. No es un captcha mal resuelto ni un CDC inválido, y no
-se arregla cambiando el User-Agent (aunque conviene mandarlo: el script ya lo
-hace).
+### Antes de nada: puede ser transitorio
+
+El portal está detrás de un **WAF** (las cookies que reparte son de F5 BIG-IP y
+Dynatrace: `BIGipServer…`, `TS01…`, `dtCookie`, `rxVisitor`, `dtSa`), y ese WAF
+frena con `401` a los clientes que no le gustan —por huella, por ráfaga o por
+volumen— sin que el XML tenga nada de malo.
+
+Comprobado en la práctica: una corrida con los cuatro CDC terminó en `HTTP 401`
+y, minutos después, el mismo endpoint devolvió los cuatro XML (`HTTP 200 ·
+application/xml`) **sin sesión y sin nada especial**. Es decir, el `401` puede
+ser temporal. Antes de meterse en el resto de esta sección:
+
+1. Volvé a correr la descarga, con más pausa:
+
+   ```bash
+   node tools/descargar-xml.js --entrada cdcs.txt --salida ./xml --pausa 4000
+   ```
+
+2. Ante un 401/403 el script ya abre la sesión una vez y, si vuelve a pasar,
+   espera unos segundos y reintenta (el `401` a mitad de un lote suele ser el
+   WAF, no el CDC).
+
+Si con eso igual falla, seguí con lo de abajo.
+
+### Si el 401 persiste
+
+Significa: *el portal no te reconoce como una petición de su propia pantalla de
+consultas*. No es un captcha mal resuelto ni un CDC inválido, y no se arregla
+cambiando el User-Agent (aunque conviene mandarlo: el script ya lo hace).
 
 Cómo funciona la descarga por dentro, según la propia pantalla de consultas:
 
