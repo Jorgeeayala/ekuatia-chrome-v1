@@ -108,6 +108,20 @@
         font-size: 12px;
         color: #374151;
       }
+      #diag {
+        display: none;
+        margin: 8px 0 0;
+        padding: 8px;
+        background: #f9fafb;
+        border: 1px solid #e5e7eb;
+        border-radius: 6px;
+        font: 11px/1.4 ui-monospace, Consolas, monospace;
+        white-space: pre-wrap;
+        word-break: break-word;
+        max-height: 220px;
+        overflow: auto;
+        user-select: text;
+      }
     </style>
   </head>
   <body>
@@ -123,9 +137,11 @@
       <button id="descargarPendientes" class="secundario">Sólo pendientes</button>
       <button id="copiar" class="secundario">Copiar</button>
       <button id="limpiar" class="secundario">Limpiar</button>
+      <button id="diagnostico" class="secundario" title="Muestra qué está pasando por dentro">Diagnóstico</button>
     </div>
 
     <div id="estado"></div>
+    <pre id="diag" title="Hacé doble clic para seleccionar todo y Ctrl+C para copiar"></pre>
     <ul id="lista"></ul>
 
     <p class="nota">

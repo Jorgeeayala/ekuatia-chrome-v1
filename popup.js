@@ -13,6 +13,8 @@ document.addEventListener('DOMContentLoaded', function () {
   var btnPendientes = document.getElementById('descargarPendientes');
   var btnCopiar = document.getElementById('copiar');
   var btnLimpiar = document.getElementById('limpiar');
+  var btnDiag = document.getElementById('diagnostico');
+  var diag = document.getElementById('diag');
 
   /* Si el portal pide la sesión (401), el estado real es "consultá este CDC en el
    * portal primero": el chip lo dice y el botón Portal de la fila lo abre. */
@@ -170,6 +172,60 @@ document.addEventListener('DOMContentLoaded', function () {
     chrome.storage.local.set({ bandeja: [] }, function () {
       estado.textContent = '';
       pintar([]);
+    });
+  });
+
+  /* ----------------------------- diagnóstico -------------------------------- */
+
+  function informeTexto(r) {
+    var l = [];
+    l.push('Extensión   v' + r.version);
+    l.push('Bandeja     ' + r.bandeja + ' CDC');
+    l.push('Portal      ' + r.portal);
+    l.push('Pestañas del portal abiertas: ' + r.pestanasPortal);
+    l.push('');
+    l.push('Últimas descargas de Chrome:');
+    if (typeof r.descargas === 'string') {
+      l.push('  ' + r.descargas);
+    } else if (!r.descargas.length) {
+      l.push('  (ninguna todavía)');
+    } else {
+      r.descargas.forEach(function (d) {
+        l.push(
+          '  · ' + d.estado + '  ' + d.archivo + (d.error ? '  [' + d.error + ']' : '') +
+            (d.bytes ? '  ' + Math.round(d.bytes / 1024) + ' KB' : '')
+        );
+      });
+    }
+    l.push('');
+    if (r.ultimoError) {
+      l.push('Último error (' + new Date(r.ultimoError.ts).toLocaleString('es-PY') + '):');
+      l.push('  en: ' + r.ultimoError.donde);
+      l.push('  ' + r.ultimoError.texto);
+    } else {
+      l.push('Último error: ninguno registrado');
+    }
+    return l.join('\n');
+  }
+
+  btnDiag.addEventListener('click', function () {
+    estado.textContent = 'Revisando…';
+    chrome.runtime.sendMessage({ tipo: 'diagnostico' }, function (r) {
+      if (chrome.runtime.lastError) {
+        diag.style.display = 'block';
+        diag.textContent =
+          'El service worker no respondió:\n  ' + chrome.runtime.lastError.message +
+          '\n\nProbá recargar la extensión:\n  chrome://extensions → Descargar XML de e-Kuatia (CDC) → ⟳';
+        estado.textContent = '';
+        return;
+      }
+      if (!r) {
+        estado.textContent = 'Sin respuesta del service worker.';
+        return;
+      }
+      diag.style.display = 'block';
+      diag.textContent = informeTexto(r);
+      estado.textContent = 'Diagnóstico listo.';
     });
   });
 

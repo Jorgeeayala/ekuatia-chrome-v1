@@ -258,17 +258,115 @@ async function guardarXml(cdcLimpio, texto) {
 
 /** Descarga el XML de un CDC a la carpeta e-Kuatia/xml/. */
 async function descargarXml(cdcLimpio) {
-  var ver = await verificarXml(cdcLimpio);
+  try {
+    var ver = await verificarXml(cdcLimpio);
 
-  if (!ver.ok) {
-    await bandejaMarcar(cdcLimpio, ver.sesion ? 'error' : 'no-encontrado', ver.motivo);
-    return { ok: false, cdc: cdcLimpio, motivo: ver.motivo, sesion: !!ver.sesion };
+    if (!ver.ok) {
+      await bandejaMarcar(cdcLimpio, ver.sesion ? 'error' : 'no-encontrado', ver.motivo);
+      if (ver.sesion) await anotarError('descarga rechazada por el portal', ver.motivo, cdcLimpio);
+      return { ok: false, cdc: cdcLimpio, motivo: ver.motivo, sesion: !!ver.sesion };
+    }
+
+    var id = await guardarXml(cdcLimpio, ver.texto);
+
+    await bandejaMarcar(cdcLimpio, 'descargado');
+    return { ok: true, cdc: cdcLimpio, downloadId: id, bytes: ver.bytes };
+  } catch (err) {
+    await anotarError('descargar ' + cdcLimpio, err);
+    try {
+      await bandejaMarcar(cdcLimpio, 'error', 'No se pudo: ' + (err.message || err));
+    } catch (e) {
+      /* nada más que hacer */
+    }
+    return { ok: false, cdc: cdcLimpio, motivo: 'No se pudo: ' + (err.message || err) };
+  }
+}
+
+/* ------------------------------ diagnóstico -------------------------------- */
+
+/** Deja anotado el último error, para poder verlo desde el popup. */
+async function anotarError(donde, err, extra) {
+  var texto = (err && err.stack) || (err && err.message) || String(err);
+  try {
+    await chrome.storage.local.set({
+      ultimoError: { donde: donde, texto: String(texto), ts: Date.now(), extra: extra || '' },
+    });
+  } catch (e) {
+    /* si ni el storage responde, no hay nada que hacer */
+  }
+}
+
+/**
+ * Junta todo lo que permite saber por qué algo no anda, sin abrir DevTools:
+ * versión, tamaño de la bandeja, si el portal responde, cuántas pestañas del
+ * portal hay abiertas, cómo salieron las últimas descargas de Chrome y el
+ * último error guardado.
+ */
+async function diagnostico() {
+  var informe = {
+    version: '?',
+    bandeja: 0,
+    portal: '',
+    pestanasPortal: 0,
+    descargas: [],
+    ultimoError: null,
+  };
+
+  try {
+    informe.version = chrome.runtime.getManifest().version;
+  } catch (e) {
+    informe.version = 'error: ' + (e.message || e);
   }
 
-  var id = await guardarXml(cdcLimpio, ver.texto);
+  try {
+    var datos = await chrome.storage.local.get(['bandeja', 'ultimoError']);
+    informe.bandeja = Array.isArray(datos.bandeja) ? datos.bandeja.length : 0;
+    informe.ultimoError = datos.ultimoError || null;
+  } catch (e) {
+    informe.storage = 'error: ' + (e.message || e);
+  }
 
-  await bandejaMarcar(cdcLimpio, 'descargado');
-  return { ok: true, cdc: cdcLimpio, downloadId: id, bytes: ver.bytes };
+  try {
+    var pestanas = await chrome.tabs.query({ url: URL_CONSULTA + '*' });
+    informe.pestanasPortal = pestanas.length;
+  } catch (e) {
+    informe.pestanasPortal = 'error: ' + (e.message || e);
+  }
+
+  try {
+    var resp = await fetch(URL_CONSULTA, { credentials: 'include', redirect: 'follow' });
+    informe.portal = 'HTTP ' + resp.status;
+  } catch (e) {
+    informe.portal = 'no se pudo conectar: ' + (e.message || e);
+  }
+
+  try {
+    var bajadas = await chrome.downloads.search({ limit: 5, orderBy: ['-startTime'] });
+    informe.descargas = bajadas.map(function (d) {
+      return {
+        archivo: String(d.filename || '').split(/[\\/]/).pop() || '(sin nombre)',
+        estado: d.state,
+        error: d.error || '',
+        bytes: d.fileSize || d.totalBytes || 0,
+      };
+    });
+  } catch (e) {
+    informe.descargas = 'error: ' + (e.message || e);
+  }
+
+  return informe;
+}
+
+/** Si Chrome interrumpe una descarga, queda anotado (y se ve en el popup). */
+try {
+  chrome.downloads.onChanged.addListener(function (delta) {
+    if (delta.state && delta.state.current === 'interrupted') {
+      var motivo = delta.error && delta.error.current ? delta.error.current : 'desconocido';
+      anotarError('descarga interrumpida por Chrome', motivo, 'id ' + delta.id);
+    }
+  });
+} catch (e) {
+  /* sin permiso de descargas no hay nada que escuchar */
 }
 
 function avisarProgreso(mensaje) {
@@ -398,6 +496,13 @@ chrome.runtime.onMessage.addListener(function (msg, sender, responder) {
   if (msg.tipo === 'descargar') {
     descargarXml(msg.cdc).then(function (r) {
       responder(r);
+    });
+    return true;
+  }
+
+  if (msg.tipo === 'diagnostico') {
+    diagnostico().then(function (informe) {
+      responder(informe);
     });
     return true;
   }
