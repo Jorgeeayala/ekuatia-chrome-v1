@@ -1,27 +1,47 @@
 # Descargar XML de e-Kuatia (CDC)
 
-Extensión de Chrome (Manifest V3) que descarga el **XML de un comprobante
-electrónico** de [e-Kuatia](https://ekuatia.set.gov.py/consultas/) (SIFEN, DNIT
-Paraguay) a partir del **CDC** — el Código de Control de 44 dígitos que figura
-en el KuDE.
+Dos herramientas para bajar el **XML de un comprobante electrónico** de
+[e-Kuatia](https://ekuatia.set.gov.py/consultas/) (SIFEN, DNIT Paraguay) a
+partir del **CDC** — el Código de Control de 44 dígitos que figura en el KuDE:
 
-Seleccionás el CDC en cualquier página y la extensión baja el XML a
-`Descargas/e-Kuatia/xml/<CDC>.xml`.
-
-## Por qué no hace falta certificado ni captcha
+- una **extensión de Chrome** (MV3) que descarga desde el navegador, donde vive
+  la sesión del portal;
+- un **script de línea de comandos** (`tools/descargar-xml.js`) para lotes, sin
+  dependencias (Node 18+).
 
 ```
-GET https://ekuatia.set.gov.py/docs/documento-electronico-xml/<CDC>  →  application/xml
+/consultas/  →  consulta del CDC (captcha)  →  sesión del portal
+                                                    ↓
+                     GET /docs/documento-electronico-xml/<CDC>  →  XML
 ```
 
-Ese endpoint devuelve el DTE completo y firmado. Es público: no exige
-certificado CCFE (como el WS de SIFEN), ni sesión, ni resolver el reCAPTCHA de
-la pantalla de consulta. Todo documentado en
-[`DESCARGA-XML.md`](DESCARGA-XML.md), incluido el caso trampa: cuando el CDC no
-tiene XML público el servidor responde `200` con un **HTML vacío**, así que la
-respuesta se valida antes de guardar y nunca se escribe un `.xml` vacío.
+## Lo que hay que saber antes de empezar (el 401)
 
-## Instalación
+**El endpoint dejó de ser anónimo.** En 2026 el portal empezó a contestar
+`HTTP 401` a las peticiones que no traen la **sesión del navegador**: la misma
+que la pantalla de consultas abre al consultar un CDC (con el reCAPTCHA "No soy
+un robot" y las cookies del portal).
+
+- El 401 **no** es un CDC inválido, ni un captcha sin resolver en el script, ni
+  un error de configuración: es el portal pidiendo su sesión.
+- La extensión lo tiene más fácil porque corre dentro del navegador (manda las
+  cookies). El script ahora manda cabeceras de Chrome y, ante un 401, abre la
+  sesión en `/consultas/` y reintenta; si el portal exige la consulta previa,
+  se le puede pasar la sesión del navegador con `--curl` o `--cookie`.
+
+Todo el detalle, la evidencia y los cuatro caminos posibles están en
+[`DESCARGA-XML.md`](DESCARGA-XML.md) → *"Si da 401"*.
+
+### Diagnóstico en un comando
+
+```bash
+node tools/diagnostico.js --entrada cdcs.txt
+```
+
+Corre ocho sondas contra el portal, dice qué está pasando y guarda todo en
+`diagnostico-401.txt`.
+
+## Instalación de la extensión
 
 1. `chrome://extensions` → activar **Modo de desarrollador**
 2. **Cargar descomprimida** → seleccionar esta carpeta
@@ -43,11 +63,13 @@ Manual Técnico del SIFEN v150 §10.1 y §10.2. Si el dígito no cierra, avisa c
 una `!` roja y no descarga nada.
 
 El popup muestra el estado de cada CDC: *descargado*, *sin XML* (inexistente,
-rechazado o inutilizado), *error* o *pendiente*.
+rechazado o inutilizado), *error* o *pendiente*. Si el portal contesta 401, el
+chip *error* explica que hay que abrir la sesión en la pantalla de consultas
+(pasá el mouse por encima).
+
+Los archivos quedan en `Descargas/e-Kuatia/xml/<CDC>.xml`.
 
 ## Descarga en lote, sin navegador
-
-Para muchos comprobantes conviene el script, que no depende de Chrome:
 
 ```bash
 # uno o varios CDC sueltos
@@ -58,6 +80,9 @@ node tools/descargar-xml.js --entrada cdcs.txt --salida ./xml
 
 # nombre legible: AAAA-MM-DD_RUC-numero_CDC.xml
 node tools/descargar-xml.js --entrada cdcs.txt --nombre-largo
+
+# con la sesión copiada del navegador ("Copy as cURL" de la descarga)
+node tools/descargar-xml.js --entrada cdcs.txt --curl captura-curl.txt
 
 # ver qué responde el servidor cuando algo no sale como se espera
 node tools/descargar-xml.js --entrada cdcs.txt --debug
@@ -77,28 +102,33 @@ de red: el endpoint es público y no conviene parecer un crawler.
 
 ## Probarlo
 
-Guía completa con los tres casos de prueba (CDC real, inexistente y con dígito
-verificador roto), verificación del XML y solución de problemas:
-[`PRUEBA-PASO-A-PASO.md`](PRUEBA-PASO-A-PASO.md).
+- Guía paso a paso con los tres casos de prueba (CDC real, inexistente y con
+  dígito verificador roto), verificación del XML y solución de problemas:
+  [`PRUEBA-PASO-A-PASO.md`](PRUEBA-PASO-A-PASO.md).
+- Para probar **sin tocar el portal** hay un servidor falso que imita los tres
+  comportamientos del endpoint:
+
+  ```bash
+  node tools/pruebas/mock-ekuatia.js                     # el XML necesita la cookie de /consultas/
+  MOCK_MODO=publico  node tools/pruebas/mock-ekuatia.js   # el caso viejo, sin sesión
+  MOCK_MODO=consulta node tools/pruebas/mock-ekuatia.js   # exige haber consultado ese CDC
+  ```
+
+  y en otra terminal, con `--base-url http://127.0.0.1:8099`.
 
 ## Estructura
 
 | Archivo | Qué hace |
 |---|---|
 | `manifest.json` | MV3: atajos `Alt+X` / `Alt+C`, popup, permisos |
-| `background.js` | service worker: valida el CDC y descarga el XML |
+| `background.js` | service worker: valida el CDC y descarga el XML con la sesión del navegador |
 | `src/cdc.js` | normalizar, validar (módulo 11) y descomponer el CDC |
 | `popup.html` / `popup.js` | bandeja de CDC, descargas y avance |
 | `tools/descargar-xml.js` | descarga en lote desde la línea de comandos |
-| `DESCARGA-XML.md` | el endpoint, su comportamiento y el plan B |
-
-## Advertencia
-
-El endpoint es interno del portal y no está documentado: puede cambiar sin
-aviso. Si algún día empieza a devolver HTML vacío para todo, el respaldo es el
-**WS de SIFEN** (`https://sifen.set.gov.py/de/ws/consultas/consulta-de.wsdl`),
-que da el mismo XML respondiendo `0422`, pero exige certificado CCFE con TLS
-mutuo.
+| `tools/diagnostico.js` | ocho sondas + veredicto del 401 (`diagnostico-401.txt`) |
+| `tools/red.js` | cabeceras de navegador, cookies y lector de "Copy as cURL" |
+| `tools/pruebas/mock-ekuatia.js` | servidor falso para probar sin red |
+| `DESCARGA-XML.md` | el endpoint, el 401, qué camino tomar y el plan B |
 
 ## Créditos
 

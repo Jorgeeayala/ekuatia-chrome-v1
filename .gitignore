@@ -1,0 +1,10 @@
+# Salidas de las herramientas (no se versionan)
+xml/
+diagnostico-401.txt
+captura-curl.txt
+no_encontrados.txt
+no_validos.txt
+resumen.csv
+
+# Node
+node_modules/

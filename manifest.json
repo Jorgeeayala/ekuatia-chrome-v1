@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Descargar XML de e-Kuatia (CDC)",
-  "version": "1.3",
-  "description": "Descarga el XML de comprobantes electrónicos de e-Kuatia (SET/DNIT Paraguay) a partir del CDC, sin captcha ni certificado.",
+  "version": "1.4",
+  "description": "Descarga el XML de comprobantes electrónicos de e-Kuatia (DNIT Paraguay) desde el CDC, reutilizando la sesión del navegador.",
   "permissions": ["contextMenus", "tabs", "scripting", "activeTab", "storage", "downloads"],
   "host_permissions": ["https://ekuatia.set.gov.py/*"],
   "background": {

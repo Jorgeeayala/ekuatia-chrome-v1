@@ -8,19 +8,36 @@
  *               └─► ¿la respuesta es XML?  sí → guardar en Descargas/e-Kuatia/xml/
  *                                           no → marcar "sin XML público"
  *
- * El endpoint es público: no hace falta certificado, sesión ni captcha.
- * Cuando el CDC no tiene XML público (inexistente, rechazado o inutilizado)
- * responde 200 con un HTML vacío, así que la respuesta se valida antes de
- * grabar. Ver DESCARGA-XML.md.
+ * Ojo: desde 2026 el endpoint ya no es anónimo. El XML viaja con la sesión que
+ * el portal abre al consultar el CDC, y sin esa sesión contesta 401. Por eso
+ * las peticiones van con credentials:'include' (usan las cookies del navegador):
+ * la extensión corre donde está la sesión. Igual conviene consultar el CDC una
+ * vez en la pantalla de consultas. Cuando el CDC no tiene XML público
+ * (inexistente, rechazado o inutilizado) responde 200 con un HTML vacío, así
+ * que la respuesta se valida antes de grabar. Ver DESCARGA-XML.md.
  */
 
 importScripts('src/cdc.js');
 
 var URL_XML = 'https://ekuatia.set.gov.py/docs/documento-electronico-xml/';
+var URL_CONSULTA = 'https://ekuatia.set.gov.py/consultas/';
 var CARPETA_XML = 'e-Kuatia/xml';
 var PAUSA_DESCARGA_MS = 1200;
 var MAX_BANDEJA = 500;
 var RE_XML = /^\s*(<\?xml|<rde|<rDE)/i;
+
+/**
+ * Qué decir cuando el portal rechaza la descarga.
+ *
+ * Desde mediados de 2026 el endpoint del XML dejó de ser anónimo: contesta 401
+ * cuando la petición no trae la sesión que el propio portal abre al consultar
+ * el CDC (con captcha). La extensión va por el camino bueno —el navegador, con
+ * sus cookies—, pero la sesión tiene que estar abierta.
+ */
+var MOTIVO_SESION =
+  'HTTP 401 · el portal exige su sesión: abrí ' +
+  URL_CONSULTA +
+  ' y consultá ese CDC (con captcha); recién ahí el XML se puede descargar';
 
 /* ------------------------------- bandeja ---------------------------------- */
 
@@ -56,12 +73,13 @@ async function bandejaAgregar(cdcLimpio, extra) {
   return bandeja;
 }
 
-async function bandejaMarcar(cdcLimpio, estadoXml) {
+async function bandejaMarcar(cdcLimpio, estadoXml, motivo) {
   var bandeja = await bandejaLeer();
   for (var i = 0; i < bandeja.length; i++) {
     if (bandeja[i].cdc === cdcLimpio) {
       bandeja[i].xml = estadoXml;
       bandeja[i].xmlTs = Date.now();
+      bandeja[i].xmlMotivo = motivo || '';
     }
   }
   await bandejaGuardar(bandeja);
@@ -86,14 +104,21 @@ function marcar(tabId, texto, color, titulo) {
 /**
  * Pide el XML y comprueba que realmente lo sea: el servidor responde 200 con
  * un HTML vacío cuando el CDC no tiene XML público.
+ *
+ * `credentials: 'include'` es lo que hace que viaje la cookie de sesión del
+ * navegador: sin ella el portal contesta 401 (ver MOTIVO_SESION).
  */
 async function verificarXml(cdcLimpio) {
   var resp = await fetch(URL_XML + cdcLimpio, {
     method: 'GET',
-    headers: { Accept: 'application/xml' },
+    headers: { Accept: 'application/xml,text/xml,*/*;q=0.8', 'Accept-Language': 'es-PY,es;q=0.9' },
+    credentials: 'include',
     redirect: 'follow',
   });
 
+  if (resp.status === 401 || resp.status === 403) {
+    return { ok: false, sesion: true, motivo: MOTIVO_SESION };
+  }
   if (!resp.ok) return { ok: false, motivo: 'HTTP ' + resp.status };
 
   var texto = await resp.text();
@@ -108,8 +133,8 @@ async function descargarXml(cdcLimpio) {
   var ver = await verificarXml(cdcLimpio);
 
   if (!ver.ok) {
-    await bandejaMarcar(cdcLimpio, 'no-encontrado');
-    return { ok: false, cdc: cdcLimpio, motivo: ver.motivo };
+    await bandejaMarcar(cdcLimpio, ver.sesion ? 'error' : 'no-encontrado', ver.motivo);
+    return { ok: false, cdc: cdcLimpio, motivo: ver.motivo, sesion: !!ver.sesion };
   }
 
   var id = await chrome.downloads.download({
@@ -140,6 +165,7 @@ async function descargarVarios(cdcs) {
     try {
       var r = await descargarXml(cdcLimpio);
       if (r.ok) resultados.descargado++;
+      else if (r.sesion) resultados.error++;
       else resultados['no-encontrado']++;
     } catch (err) {
       resultados.error++;
@@ -194,6 +220,8 @@ async function descargarDesdeTexto(texto) {
     var r = await descargarXml(prep.cdc);
     if (r.ok) {
       marcar(null, '✓', '#15803d', 'XML descargado: ' + formatearCdc(prep.cdc));
+    } else if (r.sesion) {
+      marcar(null, '!', '#b91c1c', r.motivo);
     } else {
       marcar(null, '·', '#a16207', formatearCdc(prep.cdc) + ': ' + r.motivo);
     }

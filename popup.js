@@ -26,6 +26,7 @@ document.addEventListener('DOMContentLoaded', function () {
     span.className = 'chip' + (def ? ' ' + def[0] : '');
     span.textContent = def ? def[1] : 'pendiente';
     if (!def) span.title = 'Todavía no se intentó descargar';
+    else if (entry.xmlMotivo) span.title = entry.xmlMotivo;
     return span;
   }
 

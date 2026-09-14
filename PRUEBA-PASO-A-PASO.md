@@ -31,7 +31,7 @@ cerrá y volvé a abrir la terminal.
 Si no lo tenés:
 
 ```bash
-git clone -b arena/01a09cef-ekuatia-chrome-v1 https://github.com/Jorgeeayala/ekuatia-chrome-v1.git
+git clone -b arena/01a09d6c-ekuatia-chrome-v1 https://github.com/Jorgeeayala/ekuatia-chrome-v1.git
 cd ekuatia-chrome-v1
 ```
 
@@ -39,7 +39,7 @@ Si ya lo tenés clonado:
 
 ```bash
 git fetch origin
-git checkout arena/01a09cef-ekuatia-chrome-v1
+git checkout arena/01a09d6c-ekuatia-chrome-v1
 git pull
 ```
 
@@ -73,7 +73,8 @@ imprime el KuDE.
 node tools/descargar-xml.js --entrada cdcs.txt --salida ./xml --debug
 ```
 
-Deberías ver algo así, con una pausa de ~1,2 s entre cada uno:
+Deberías ver algo así, con una pausa de ~1,2 s entre cada uno (si en cambio ves
+`error: HTTP 401`, andá directo a la *Parte 3.1*):
 
 ```
     [debug] HTTP 200 · application/xml · <?xml version="1.0" ...
@@ -181,11 +182,35 @@ Los archivos van a `Descargas/e-Kuatia/xml/<CDC>.xml`. En Windows:
 |---|---|---|
 | `✗ no válido` con un CDC que sabés que existe | está mal copiado (falta o sobra un dígito) | pegalo y comparalo con el KuDE; o validalo con el comando de abajo |
 | Todos dicen `sin XML público` | el endpoint cambió, o caíste en un bloqueo por volumen | corré con `--debug`: si el `HTTP` no es `200` o el content-type no es `text/html`, **mandame esa línea** |
+| `! <CDC> error: HTTP 401` | el portal exige su **sesión**: el endpoint ya no es anónimo | mirá *Parte 3.1* acá abajo: `node tools/diagnostico.js --entrada cdcs.txt` y después `--curl`/`--cookie` con la sesión del navegador |
 | `fetch failed` / `ENOTFOUND` | sin internet, o el DNS no resuelve `ekuatia.set.gov.py` | probá abrir el sitio en el navegador |
 | `EACCES` / `no such file or directory` | no puede escribir en la carpeta de salida | usá otra: `--salida ./xml2` |
 | La extensión no hace nada | el service worker quedó viejo | en `chrome://extensions` tocá el botón de recargar (⟳) de la extensión |
 | `Alt+X` no responde | el atajo está en conflicto, o la página es especial | revisalo en `chrome://extensions/shortcuts`; y probá en una página `https://` normal |
 | `Alt+X` en un PDF no lee la selección | el visor de PDF de Chrome no expone la selección al script | usá el menú contextual o el popup |
+
+### 3.1 El caso `HTTP 401` (el que apareció en septiembre de 2026)
+
+El portal dejó de servir el XML a cualquier cliente: ahora la descarga depende
+de la **sesión** que la pantalla de consultas abre al consultar el CDC (con el
+captcha). Confirmalo y elegí el camino con el diagnóstico:
+
+```bash
+node tools/diagnostico.js --entrada cdcs.txt
+```
+
+Te deja `diagnostico-401.txt` con las ocho sondas y el veredicto. Según lo que
+diga:
+
+- **Si el portal acepta la sesión para cualquier CDC** → copiá la petición del
+  navegador (Chrome → F12 → Network → filtro `docs` → clic en la descarga →
+  *Copy as cURL*), guardala en `captura-curl.txt` y corré el lote con
+  `--curl captura-curl.txt` (o con `--cookie "JSESSIONID=..."`).
+- **Si exige consultar cada CDC** → en lote no se puede sin resolver el captcha:
+  usá la extensión de Chrome CDC por CDC, pedile el XML al emisor, o pasá al
+  WS de SIFEN con certificado CCFE.
+
+Está explicado con más detalle en [`DESCARGA-XML.md`](DESCARGA-XML.md) → *"Si da 401"*.
 
 Para validar un CDC suelto sin descargarlo:
 
@@ -200,9 +225,11 @@ node -e "const c=require('./src/cdc.js');const a=c.analizarCdc(process.argv[1]);
 Cuando termines, con esto me alcanza para cerrar:
 
 1. La **salida completa** de la corrida (la podés pegar tal cual).
-2. Si algún CDC real salió como `sin XML público`: la línea `[debug]` de ese
+2. Si aparece `error: HTTP 401`: el archivo `diagnostico-401.txt` que deja
+   `node tools/diagnostico.js --entrada cdcs.txt`.
+3. Si algún CDC real salió como `sin XML público`: la línea `[debug]` de ese
    caso.
-3. Si querés que ajuste algo de la salida para tu app: el **nombre de archivo**
+4. Si querés que ajuste algo de la salida para tu app: el **nombre de archivo**
    y la **estructura de carpetas** que espera (¿lee todos los `.xml` de una
    carpeta? ¿necesita algún índice?).
 

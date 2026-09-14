@@ -5,15 +5,19 @@
  *   node tools/descargar-xml.js 01800975120007008007180822026080217723517894
  *   node tools/descargar-xml.js --entrada cdcs.txt
  *   node tools/descargar-xml.js --entrada cdcs.txt --salida ./xml --debug
- *   node tools/descargar-xml.js --entrada cdcs.txt --warmup --header "User-Agent: Mozilla/5.0 ..."
+ *   node tools/descargar-xml.js --entrada cdcs.txt --curl captura-curl.txt
  *
- * Notas:
- *   - El endpoint es público pero el servidor puede exigir cabeceras de
- *     navegador y/o una cookie de sesión: ante un 401 hay que probar con
- *     --warmup (visita /consultas/ antes y reutiliza la cookie) y/o --header.
+ * Contexto (importante desde el 401):
+ *   - El endpoint /docs/documento-electronico-xml/<CDC> ya NO es anónimo: la
+ *     pantalla de consultas lo usa con la sesión (cookie) que el portal abre al
+ *     consultar el CDC. Ante un cliente sin sesión responde 401.
+ *   - Por eso este script manda las cabeceras de un Chrome real y, si recibe
+ *     401, abre la sesión en /consultas/ y reintenta una vez.
+ *   - Si aun así da 401, se copia una petición del navegador con
+ *     "Copy as cURL" y se pasa con --curl (o --cookie). Ver DESCARGA-XML.md.
  *   - Ante un CDC que no existe, no está aprobado o fue inutilizado, el
- *     servidor responde 200 con un HTML vacío. Por eso la respuesta se
- *     valida antes de guardar: nunca se escribe un .xml vacío.
+ *     servidor responde 200 con un HTML vacío. Por eso la respuesta se valida
+ *     antes de guardar: nunca se escribe un .xml vacío.
  *   - Sin dependencias (usa el fetch de Node 18+).
  */
 
@@ -22,9 +26,8 @@
 var fs = require('fs');
 var path = require('path');
 var cdc = require('../src/cdc.js');
+var red = require('./red.js');
 
-var ENDPOINT = 'https://ekuatia.set.gov.py/docs/documento-electronico-xml/';
-var PAGINA_CONSULTA = 'https://ekuatia.set.gov.py/consultas/';
 var RE_XML = /^\s*(<\?xml|<rde|<rDE)/i;
 
 /* ------------------------------- argumentos -------------------------------- */
@@ -37,7 +40,12 @@ function parsearArgumentos(argv) {
     reintentos: 3,
     nombreCorto: true,
     debug: false,
-    warmup: false,
+    navegador: true,
+    warmup: true,
+    api: false,
+    base: null,
+    curl: null,
+    cookie: null,
     headers: [],
     cdcs: [],
   };
@@ -50,7 +58,15 @@ function parsearArgumentos(argv) {
     else if (a === '--reintentos') opts.reintentos = Number(argv[++i]);
     else if (a === '--nombre-largo') opts.nombreCorto = false;
     else if (a === '--debug') opts.debug = true;
+    else if (a === '--navegador') opts.navegador = true;
+    else if (a === '--cliente-simple') opts.navegador = false;
     else if (a === '--warmup') opts.warmup = true;
+    else if (a === '--sin-warmup') opts.warmup = false;
+    else if (a === '--api') opts.api = true;
+    else if (a === '--base-url') opts.base = argv[++i];
+    else if (a === '--curl') opts.curl = argv[++i];
+    else if (a === '--cookie') opts.cookie = argv[++i];
+    else if (a === '--cookie-archivo') opts.cookie = '@' + argv[++i];
     else if (a === '--header' || a === '-H') opts.headers.push(argv[++i]);
     else if (a === '--ayuda' || a === '-h') opts.ayuda = true;
     else opts.cdcs.push(a);
@@ -66,100 +82,148 @@ function ayuda() {
       '  node tools/descargar-xml.js <CDC> [<CDC>...]',
       '  node tools/descargar-xml.js --entrada cdcs.txt [--salida ./xml]',
       '',
-      '  --entrada, -i    archivo con un CDC por línea (acepta espacios, puntos o guiones)',
-      '  --salida,  -o    carpeta de destino (por defecto: ./xml)',
-      '  --pausa          milisegundos entre descargas (por defecto: 1200)',
-      '  --reintentos     reintentos ante errores de red o 5xx (por defecto: 3)',
-      '  --nombre-largo   nombra el archivo como AAAA-MM-DD_RUC-numero_CDC.xml',
-      '  --debug          muestra estado, cabeceras y un trozo de la respuesta',
-      '  --warmup         visita /consultas/ antes y reutiliza su cookie de sesión',
-      '  --header, -H     cabecera extra, repetible: -H "User-Agent: Mozilla/5.0 ..."',
+      '  --entrada, -i     archivo con un CDC por línea (acepta espacios, puntos o guiones)',
+      '  --salida,  -o     carpeta de destino (por defecto: ./xml)',
+      '  --pausa           milisegundos entre descargas (por defecto: 1200)',
+      '  --reintentos      reintentos ante errores de red o 5xx (por defecto: 3)',
+      '  --nombre-largo    nombra el archivo como AAAA-MM-DD_RUC-numero_CDC.xml',
+      '  --debug           muestra estado, cabeceras y un trozo de la respuesta',
+      '',
+      '  Sesión y cabeceras (lo que destraba los 401):',
+      '  --navegador       manda cabeceras de Chrome (por defecto)',
+      '  --cliente-simple  manda sólo Accept, como antes, para comparar',
+      '  --sin-warmup      no intenta abrir la sesión en /consultas/ ante un 401',
+      '  --cookie       X  cookie de sesión, p.ej. -H "JSESSIONID=ABC" o "NOMBRE=valor; OTRA=valor"',
+      '  --cookie-archivo  un archivo con la cookie (o pegar el "Copy as cURL" completo)',
+      '  --curl AR         pega acá (o en un archivo) el "Copy as cURL" de Chrome; reutiliza',
+      '                    sus cabeceras y su cookie de sesión',
+      '  --header, -H      cabecera extra, repetible: -H "User-Agent: Mozilla/5.0 ..."',
+      '  --api             además del GET, prueba la API JSON /docs/documento-electronico',
+      '  --base-url        portal alternativo (para pruebas; también EKUA_BASE)',
       '',
       'Deja en la carpeta de salida:',
       '  <CDC>.xml                 los XML descargados',
       '  no_encontrados.txt        CDC válidos sin XML (inexistente, rechazado, inutilizado)',
       '  no_validos.txt            líneas que no son un CDC de 44 dígitos con DV correcto',
       '  resumen.csv               CDC, estado, bytes y archivo',
+      '',
+      'Si todo da 401, el siguiente paso es el diagnóstico:',
+      '  node tools/diagnostico.js --entrada cdcs.txt',
     ].join('\n')
   );
 }
 
-/* ------------------------------- utilidades -------------------------------- */
+/* ------------------------------ sesión (jar) ------------------------------- */
 
-function esperar(ms) {
-  return new Promise(function (r) {
-    setTimeout(r, ms);
+/** Arma el contexto de una corrida: jar de cookies + estado del warmup. */
+function nuevoContexto(opts) {
+  var jar = {};
+  var ctx = { jar: jar, warmupHecho: false, apiDescartada: false, textos: {}, headers: {} };
+
+  // Cabeceras: las del navegador (o sólo Accept) + --curl + --header.
+  if (opts.navegador) ctx.headers = red.cabeceras({});
+  else ctx.headers = { Accept: 'application/xml' };
+
+  if (opts.curl) {
+    var crudo = opts.curl;
+    // Si es una ruta a un archivo, se lee; si no, se toma como texto pegado.
+    if (fs.existsSync(crudo)) crudo = fs.readFileSync(crudo, 'utf8');
+    var captura = red.parsearCurl(crudo);
+    if (!captura.url && !captura.cookie && !Object.keys(captura.headers).length) {
+      console.log('· no pude leer la captura de --curl (¿pegaste el "Copy as cURL" completo?)');
+    }
+    Object.keys(captura.headers).forEach(function (k) {
+      ctx.headers[k] = captura.headers[k];
+    });
+    if (captura.cookie) red.parsearCookie(captura.cookie, jar);
+    ctx.captura = captura;
+  }
+
+  if (opts.cookie) {
+    if (opts.cookie.charAt(0) === '@') {
+      var ruta = opts.cookie.slice(1);
+      red.parsearCookie(fs.readFileSync(ruta, 'utf8'), jar);
+    } else {
+      red.parsearCookie(opts.cookie, jar);
+    }
+  }
+
+  var extras = red.headersDeLista(opts.headers);
+  Object.keys(extras).forEach(function (k) {
+    ctx.headers[k] = extras[k];
   });
+
+  return ctx;
 }
 
-function leerCdcs(opts) {
-  var lineas = [];
-  if (opts.entrada) {
-    var contenido = fs.readFileSync(opts.entrada, 'utf8');
-    lineas = contenido.split(/\r?\n/);
-  }
-  return lineas.concat(opts.cdcs);
-}
-
-/** Arma las cabeceras: las fijas + las de --header + la cookie si hay. */
-function construirHeaders(opts, jar) {
-  var h = { Accept: 'application/xml' };
-  for (var i = 0; i < opts.headers.length; i++) {
-    var partes = opts.headers[i].split(':');
-    if (partes.length >= 2) h[partes.shift().trim()] = partes.join(':').trim();
-  }
-  var nombres = Object.keys(jar || {});
-  if (nombres.length) {
-    h.Cookie = nombres
-      .map(function (n) {
-        return n + '=' + jar[n];
-      })
-      .join('; ');
-  }
+/** Devuelve las cabeceras de la petición, con la cookie del jar si hay. */
+function headersDePeticion(ctx, extra) {
+  var h = {};
+  Object.keys(ctx.headers).forEach(function (k) {
+    h[k] = ctx.headers[k];
+  });
+  Object.keys(extra || {}).forEach(function (k) {
+    h[k] = extra[k];
+  });
+  var cookie = red.cabeceraCookie(ctx.jar);
+  if (cookie) h.Cookie = cookie;
   return h;
 }
 
-/** Guarda en el jar las cookies que vengan en la respuesta. */
-function guardarCookies(resp, jar) {
-  if (!resp.headers) return;
-  var crudas = resp.headers.getSetCookie
-    ? resp.headers.getSetCookie()
-    : resp.headers.get('set-cookie');
-  var lista = Array.isArray(crudas) ? crudas : crudas ? [String(crudas)] : [];
+/** Visita /consultas/ para que el portal nos dé su cookie de sesión. */
+async function abrirSesion(ctx, opts) {
+  if (ctx.warmupHecho) return false;
+  ctx.warmupHecho = true;
 
-  lista.forEach(function (c) {
-    var par = c.split(';')[0];
-    var i = par.indexOf('=');
-    if (i > 0) jar[par.slice(0, i).trim()] = par.slice(i + 1).trim();
-  });
+  var headers = headersDePeticion(ctx, { Accept: 'text/html,application/xhtml+xml,*/*;q=0.8' });
+  delete headers['Sec-Fetch-Dest'];
+  headers['Sec-Fetch-Dest'] = 'document';
+  headers['Sec-Fetch-Mode'] = 'navigate';
+  headers['Sec-Fetch-Site'] = 'none';
+  delete headers.Referer;
+
+  try {
+    var resp = await fetch(red.paginaConsulta(opts), { headers: headers, redirect: 'follow' });
+    red.cookiesDeRespuesta(resp, ctx.jar);
+    console.log(
+      '· sesión abierta en /consultas/ → HTTP ' +
+        resp.status +
+        ' · cookies: ' +
+        red.nombresDeJar(ctx.jar)
+    );
+    return true;
+  } catch (err) {
+    console.log('· no se pudo abrir sesión: ' + (err && err.message ? err.message : err));
+    return false;
+  }
+}
+
+/* ------------------------------- debug ------------------------------------- */
+
+function depurarPeticion(headers, opts) {
+  if (!opts.debug) return;
+  console.log('    [debug] cabeceras: ' + JSON.stringify(red.cabecerasVisibles(headers)));
 }
 
 /** Muestra todo lo que el servidor contestó, para diagnosticar. */
 function depurar(etiqueta, resp, texto, opts) {
   if (!opts.debug) return;
   var lineas = ['    [debug] ' + etiqueta + ' HTTP ' + resp.status];
-  var contentType = resp.headers && resp.headers.get ? resp.headers.get('content-type') : null;
-  if (contentType) lineas.push('content-type: ' + contentType);
 
-  var auth = resp.headers && resp.headers.get ? resp.headers.get('www-authenticate') : null;
-  if (auth) lineas.push('www-authenticate: ' + auth);
-
-  if (texto != null) {
-    var muestra = texto.replace(/\s+/g, ' ').trim().slice(0, 300);
-    lineas.push('cuerpo: ' + (muestra || '(vacío)'));
+  function cabecera(nombre) {
+    var v = resp.headers && resp.headers.get ? resp.headers.get(nombre) : null;
+    if (v) lineas.push(nombre + ': ' + v);
   }
+  cabecera('content-type');
+  cabecera('www-authenticate');
+  cabecera('server');
+  cabecera('set-cookie');
+
+  if (texto != null) lineas.push('cuerpo: ' + red.recortar(texto, 300));
   console.log(lineas.join('\n             '));
 }
 
-/** Cabeceras de la petición, tal como se enviaron (sin la cookie completa). */
-function depurarPeticion(headers, opts) {
-  if (!opts.debug) return;
-  var copia = {};
-  Object.keys(headers).forEach(function (k) {
-    copia[k] = k.toLowerCase() === 'cookie' ? '(oculta)' : headers[k];
-  });
-  console.log('    [debug] cabeceras: ' + JSON.stringify(copia));
-}
+/* ------------------------------- guardado ---------------------------------- */
 
 function nombreArchivo(analisis, nombreCorto) {
   if (nombreCorto) return analisis.cdc + '.xml';
@@ -177,59 +241,123 @@ function nombreArchivo(analisis, nombreCorto) {
   );
 }
 
-/* ---------------------------- sesión (warmup) ------------------------------ */
+function guardarXml(cdcLimpio, texto, opts) {
+  var analisis = cdc.analizarCdc(cdcLimpio);
+  var archivo = path.join(opts.salida, nombreArchivo(analisis, opts.nombreCorto));
+  fs.writeFileSync(archivo, texto, 'utf8');
+  return { estado: 'descargado', bytes: Buffer.byteLength(texto, 'utf8'), archivo: archivo };
+}
 
-/** Visita /consultas/ para que el servidor nos dé su cookie de sesión. */
-async function warmup(jar, opts) {
-  var headers = { Accept: 'text/html' };
-  for (var i = 0; i < opts.headers.length; i++) {
-    var partes = opts.headers[i].split(':');
-    if (partes.length >= 2) headers[partes.shift().trim()] = partes.join(':').trim();
-  }
+/* ---------------------------- API JSON (opcional) -------------------------- */
 
+/** Busca el XML dentro de la respuesta JSON de /docs/documento-electronico. */
+function xmlEnJson(texto) {
+  var datos;
   try {
-    var resp = await fetch(PAGINA_CONSULTA, { headers: headers, redirect: 'follow' });
-    guardarCookies(resp, jar);
-    console.log(
-      '· warmup /consultas/ → HTTP ' +
-        resp.status +
-        ' · cookies: ' +
-        (Object.keys(jar).join(', ') || 'ninguna')
-    );
-    return resp.status;
-  } catch (err) {
-    console.log('· warmup falló: ' + (err && err.message ? err.message : err));
-    return 0;
+    datos = JSON.parse(texto);
+  } catch (e) {
+    return null;
   }
+  var candidatos = [
+    datos && datos.xml,
+    datos && datos.DE && datos.DE.xml,
+    datos && datos.DE && datos.DE.XML,
+    datos && typeof datos.DE === 'string' ? datos.DE : null,
+  ];
+  for (var i = 0; i < candidatos.length; i++) {
+    if (typeof candidatos[i] === 'string' && RE_XML.test(candidatos[i])) return candidatos[i];
+  }
+  var mensaje = datos && (datos.mensaje || datos.message || datos.error);
+  return mensaje ? { mensaje: mensaje } : null;
+}
+
+/**
+ * Prueba POST /docs/documento-electronico {cdc, captcha}. Si el portal contesta
+ * con el XML, se guarda; si contesta con un motivo (captcha, sesión), se anota.
+ */
+async function intentarApi(cdcLimpio, opts, ctx) {
+  var url = red.endpointJson(opts);
+  var headers = headersDePeticion(ctx, {
+    'Content-Type': 'application/json',
+    Accept: 'application/json, */*',
+  });
+
+  depurarPeticion(headers, opts);
+  var resp = await fetch(url, {
+    method: 'POST',
+    headers: headers,
+    body: JSON.stringify({ cdc: cdcLimpio, captcha: '' }),
+    redirect: 'follow',
+  });
+  red.cookiesDeRespuesta(resp, ctx.jar);
+
+  var texto = await resp.text();
+  depurar('API JSON', resp, texto, opts);
+
+  if (!resp.ok) return { estado: 'error', detalle: 'HTTP ' + resp.status + ' (API JSON)' };
+
+  var encontrado = xmlEnJson(texto);
+  if (encontrado && typeof encontrado === 'string') {
+    return guardarXml(cdcLimpio, encontrado, opts);
+  }
+  if (encontrado && encontrado.mensaje) ctx.apiMotivo = encontrado.mensaje;
+  else ctx.apiMotivo = 'la respuesta no traía el XML';
+  return null; // se sigue con el GET, que es el camino normal
 }
 
 /* -------------------------------- descarga --------------------------------- */
 
-async function descargarUno(cdcLimpio, opts, jar) {
-  var url = ENDPOINT + cdcLimpio;
-  var headers = construirHeaders(opts, jar);
+async function descargarUno(cdcLimpio, opts, ctx) {
+  if (opts.api && !ctx.apiDescartada) {
+    try {
+      var porApi = await intentarApi(cdcLimpio, opts, ctx);
+      if (porApi) return porApi;
+      ctx.apiDescartada = true;
+      if (opts.debug) console.log('    [debug] la API JSON no sirvió: ' + ctx.apiMotivo);
+    } catch (err) {
+      ctx.apiDescartada = true;
+      if (opts.debug) console.log('    [debug] la API JSON falló: ' + err.message);
+    }
+  }
+
+  var url = red.endpointXml(opts) + cdcLimpio;
   var ultimoError = null;
 
   for (var intento = 1; intento <= opts.reintentos; intento++) {
     try {
+      var headers = headersDePeticion(ctx);
       depurarPeticion(headers, opts);
       var resp = await fetch(url, { headers: headers, redirect: 'follow' });
+      red.cookiesDeRespuesta(resp, ctx.jar);
 
       // 5xx y 429 se reintentan con backoff; el resto se resuelve acá.
       if (resp.status >= 500 || resp.status === 429) {
         ultimoError = 'HTTP ' + resp.status;
         depurar('reintento ' + intento, resp, null, opts);
-        await esperar(1000 * Math.pow(2, intento - 1));
+        await red.esperar(1000 * Math.pow(2, intento - 1));
         continue;
       }
 
       var texto = await resp.text();
 
-      if (!resp.ok) {
-        // 401/403: el servidor nos está rechazando. El cuerpo suele decir por
-        // qué (falta cookie, falta User-Agent, WAF, etc.).
+      // 401/403: o falta la sesión, o el portal nos está frenando antes de
+      // llegar a la aplicación. Se abre sesión una vez y se reintenta.
+      if (resp.status === 401 || resp.status === 403) {
         depurar('rechazo', resp, texto, opts);
-        return { estado: 'error', detalle: 'HTTP ' + resp.status };
+        if (opts.warmup && !ctx.warmupHecho) {
+          await abrirSesion(ctx, opts);
+          continue;
+        }
+        return {
+          estado: 'error',
+          detalle: 'HTTP ' + resp.status + ' (sesión)',
+          motivo: red.recortar(texto, 200),
+        };
+      }
+
+      if (!resp.ok) {
+        depurar('rechazo', resp, texto, opts);
+        return { estado: 'error', detalle: 'HTTP ' + resp.status, motivo: red.recortar(texto, 200) };
       }
 
       if (!RE_XML.test(texto)) {
@@ -237,15 +365,11 @@ async function descargarUno(cdcLimpio, opts, jar) {
         return { estado: 'no-encontrado', detalle: 'sin XML público' };
       }
 
-      var analisis = cdc.analizarCdc(cdcLimpio);
-      var archivo = path.join(opts.salida, nombreArchivo(analisis, opts.nombreCorto));
-      fs.writeFileSync(archivo, texto, 'utf8');
-
-      return { estado: 'descargado', bytes: Buffer.byteLength(texto, 'utf8'), archivo: archivo };
+      return guardarXml(cdcLimpio, texto, opts);
     } catch (err) {
       ultimoError = err && err.message ? err.message : String(err);
       if (opts.debug) console.log('    [debug] excepción: ' + ultimoError);
-      await esperar(1000 * Math.pow(2, intento - 1));
+      await red.esperar(1000 * Math.pow(2, intento - 1));
     }
   }
 
@@ -253,6 +377,14 @@ async function descargarUno(cdcLimpio, opts, jar) {
 }
 
 /* ---------------------------------- main ----------------------------------- */
+
+function leerCdcs(opts) {
+  var lineas = [];
+  if (opts.entrada) {
+    lineas = fs.readFileSync(opts.entrada, 'utf8').split(/\r?\n/);
+  }
+  return lineas.concat(opts.cdcs);
+}
 
 async function main() {
   var opts = parsearArgumentos(process.argv);
@@ -263,14 +395,21 @@ async function main() {
 
   fs.mkdirSync(opts.salida, { recursive: true });
 
-  var jar = {};
-  if (opts.warmup) await warmup(jar, opts);
+  var ctx = nuevoContexto(opts);
+  if (Object.keys(ctx.jar).length) {
+    console.log('· sesión importada · cookies: ' + red.nombresDeJar(ctx.jar));
+  }
+  if (opts.navegador && opts.debug) {
+    console.log('· cliente: navegador (cabeceras de Chrome). Con --cliente-simple, sólo Accept.');
+  }
+  if (opts.warmup && !Object.keys(ctx.jar).length) await abrirSesion(ctx, opts);
 
   var resumen = [];
   var noEncontrados = [];
   var noValidos = [];
   var vistos = Object.create(null);
   var totales = { descargado: 0, 'no-encontrado': 0, error: 0, 'no-valido': 0, duplicado: 0 };
+  var con401 = 0;
 
   for (var i = 0; i < lineas.length; i++) {
     var linea = lineas[i].trim();
@@ -290,7 +429,7 @@ async function main() {
     }
     vistos[cdcLimpio] = true;
 
-    var r = await descargarUno(cdcLimpio, opts, jar);
+    var r = await descargarUno(cdcLimpio, opts, ctx);
     totales[r.estado] = (totales[r.estado] || 0) + 1;
 
     if (r.estado === 'descargado') {
@@ -301,11 +440,13 @@ async function main() {
       noEncontrados.push(cdcLimpio);
       resumen.push([cdcLimpio, 'no-encontrado', 0, '']);
     } else {
+      if (/HTTP 40[13]/.test(r.detalle)) con401++;
       console.log('! ' + cdcLimpio + '  error: ' + r.detalle);
+      if (opts.debug && r.motivo) console.log('    [debug] el servidor dijo: ' + r.motivo);
       resumen.push([cdcLimpio, 'error', 0, r.detalle || '']);
     }
 
-    if (i < lineas.length - 1) await esperar(opts.pausa);
+    if (i < lineas.length - 1) await red.esperar(opts.pausa);
   }
 
   if (noEncontrados.length) {
@@ -323,12 +464,9 @@ async function main() {
     ['cdc,estado,bytes,archivo']
       .concat(
         resumen.map(function (fila) {
-          return [
-            fila[0],
-            fila[1],
-            fila[2],
-            '"' + String(fila[3]).replace(/"/g, '""') + '"',
-          ].join(',');
+          return [fila[0], fila[1], fila[2], '"' + String(fila[3]).replace(/"/g, '""') + '"'].join(
+            ','
+          );
         })
       )
       .join('\n') + '\n',
@@ -341,6 +479,18 @@ async function main() {
       ' | con error: ' + (totales.error || 0) + ' | no válidos: ' + totales['no-valido'] +
       (totales.duplicado ? ' | duplicados: ' + totales.duplicado : '')
   );
+
+  if (con401) {
+    console.log('');
+    console.log(
+      'Aviso: el portal respondió 401/403 a ' + con401 + ' CDC. Con las cabeceras de navegador y\n' +
+        'el warmup ya se probó lo automático; si sigue igual, la descarga depende de la sesión\n' +
+        'que el portal abre al consultar el CDC en el navegador. Diagnóstico y opciones:\n' +
+        '  node tools/diagnostico.js --entrada ' + (opts.entrada || 'cdcs.txt') + ' --debug\n' +
+        '  (la explicación completa está en DESCARGA-XML.md → "Si da 401")'
+    );
+  }
+
   console.log('Carpeta: ' + path.resolve(opts.salida));
 }
 
