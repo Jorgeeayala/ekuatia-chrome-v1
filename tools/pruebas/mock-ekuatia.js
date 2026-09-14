@@ -9,8 +9,9 @@
  * Modos:
  *   publico   el XML se sirve sin sesión (el caso viejo, cuando todo andaba)
  *   cookie    el XML se sirve con la cookie que deja /consultas/ (warmup)
- *   consulta  además exige que la sesión haya consultado ese CDC (captcha),
- *             que es lo que parece pedir el portal hoy
+ *   consulta  además exige que la sesión haya consultado ese CDC (captcha)
+ *   gate-cdc  sirve SÓLO el CDC que figura como consultado y 401 para los demás,
+ *             que es el comportamiento observado en el portal (14/09/2026)
  *
  * Después:
  *   node tools/descargar-xml.js --base-url http://127.0.0.1:8099 <CDC>
@@ -25,6 +26,7 @@ var crypto = require('crypto');
 var PUERTO = Number(process.env.MOCK_PUERTO || 8099);
 var MODO = process.env.MOCK_MODO || 'cookie';
 var CDC_BUENO = '01800975120007008007180822026080217723517894';
+var CDC_SIN_XML = '01444444017001001001452822017012515873260988';
 var PAGINA_VACIA = '<!doctype html><html><head></head><body></body></html>';
 
 var sesiones = Object.create(null); // id -> { consultados: { cdc: true } }
@@ -100,17 +102,20 @@ var servidor = http.createServer(function (req, res) {
   var prefijo = '/docs/documento-electronico-xml/';
   if (url.pathname.indexOf(prefijo) === 0) {
     var cdcPedido = url.pathname.slice(prefijo.length);
-    if (MODO !== 'publico' && !(id && sesiones[id])) {
+    if (MODO === 'gate-cdc' && cdcPedido !== CDC_BUENO) {
+      return json(res, 401, { mensaje: 'Tiempo de sesión finalizado. Realice una nueva consulta para la descarga.' });
+    }
+    if (MODO !== 'publico' && MODO !== 'gate-cdc' && !(id && sesiones[id])) {
       return json(res, 401, { mensaje: 'Sesión no iniciada. Realice una nueva consulta para la descarga.' });
     }
     if (MODO === 'consulta' && !(sesiones[id] && sesiones[id].consultados[cdcPedido])) {
       return json(res, 401, { mensaje: 'Tiempo de sesión finalizado. Realice una nueva consulta para la descarga.' });
     }
-    if (cdcPedido === CDC_BUENO) {
-      res.writeHead(200, { 'Content-Type': 'application/xml' });
-      return res.end(xmlDe(cdcPedido));
-    }
-    return html(res, 200, PAGINA_VACIA);
+    // Un CDC sin XML público: 200 con la página vacía (como el portal real).
+    if (cdcPedido === CDC_SIN_XML) return html(res, 200, PAGINA_VACIA);
+
+    res.writeHead(200, { 'Content-Type': 'application/xml' });
+    return res.end(xmlDe(cdcPedido));
   }
 
   if (url.pathname === '/docs/' || url.pathname === '/docs') return html(res, 404, 'Not Found');

@@ -14,6 +14,8 @@ document.addEventListener('DOMContentLoaded', function () {
   var btnCopiar = document.getElementById('copiar');
   var btnLimpiar = document.getElementById('limpiar');
 
+  /* Si el portal pide la sesión (401), el estado real es "consultá este CDC en el
+   * portal primero": el chip lo dice y el botón Portal de la fila lo abre. */
   var ETIQUETA = {
     descargado: ['ok', 'descargado'],
     'no-encontrado': ['no', 'sin XML'],
@@ -68,6 +70,17 @@ document.addEventListener('DOMContentLoaded', function () {
         li.appendChild(datos);
 
         li.appendChild(chip(entrada));
+
+        var btnPortal = document.createElement('button');
+        btnPortal.className = 'chico secundario';
+        btnPortal.textContent = 'Portal';
+        btnPortal.title =
+          'Abrir la consulta de este CDC en e-Kuatia. Si el portal pide el captcha, ' +
+          'resolvelo: después el XML se descarga (desde el portal o desde acá).';
+        btnPortal.addEventListener('click', function () {
+          chrome.tabs.create({ url: 'https://ekuatia.set.gov.py/consultas/' + entrada.cdc });
+        });
+        li.appendChild(btnPortal);
 
         var btn = document.createElement('button');
         btn.className = 'chico secundario';
@@ -127,7 +140,8 @@ document.addEventListener('DOMContentLoaded', function () {
       if (r && r.resultados) {
         var x = r.resultados;
         estado.textContent =
-          'Listo: ' + x.descargado + ' descargados, ' + x['no-encontrado'] + ' sin XML, ' + x.error + ' con error.';
+          'Listo: ' + x.descargado + ' descargados, ' + x['no-encontrado'] + ' sin XML, ' + x.error + ' con error.' +
+          (x.error ? ' Si algún error es HTTP 401, tocá Portal en esa fila y resolvé el captcha.' : '');
       } else {
         estado.textContent = 'No se pudo completar (¿se cerró el popup? para lotes grandes usá el script).';
       }

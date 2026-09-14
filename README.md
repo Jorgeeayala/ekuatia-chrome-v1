@@ -24,11 +24,12 @@ un robot" y las cookies del portal).
 
 - El 401 **no** es un CDC inválido, ni un captcha sin resolver en el script, ni
   un error de configuración: es el portal pidiendo su sesión.
-- **Puede ser transitorio**: el portal está detrás de un WAF (F5/Dynatrace) que
-  también frena 401 por huella, ráfaga o volumen. Si te pasa, probá otra vez y
-  con más pausa: `node tools/descargar-xml.js --entrada cdcs.txt --pausa 4000`.
-  Hay un caso real documentado en [`DESCARGA-XML.md`](DESCARGA-XML.md): la misma
-  lista que dio 401 devolvió los XML minutos después, sin sesión.
+- **Y lo más importante (comprobado)**: el portal entrega el XML **del CDC que
+  fue consultado** en su pantalla y `401` para los demás, aunque mandes la
+  sesión del navegador. En una corrida real de 4 CDC, bajó sólo el consultado.
+  O sea: para varios comprobantes hay que consultar cada uno (captcha) — o pasar
+  al WS de SIFEN con certificado CCFE. El diagnóstico lo confirma con dos CDC
+  distintos. Ver [`DESCARGA-XML.md`](DESCARGA-XML.md) → *"El CDC consultado"*.
 - La extensión lo tiene más fácil porque corre dentro del navegador (manda las
   cookies). El script manda cabeceras de Chrome y, ante un 401, abre la sesión
   en `/consultas/`, espera y reintenta; si el portal exige la consulta previa,

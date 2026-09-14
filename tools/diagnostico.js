@@ -216,20 +216,38 @@ async function main() {
   console.log('');
 
   var resultados = {};
+  var num = 0;
+  function n() {
+    return ++num;
+  }
 
-  resultados.consultaSimple = await sonda(1, 'GET /consultas/ (cliente simple)', urlConsulta, { headers: { Accept: 'text/html' } });
-  resultados.consultaChrome = await sonda(2, 'GET /consultas/ (cabeceras de Chrome)', urlConsulta, { headers: headersChrome }, { jar: jarSesion, opts: opts });
-  resultados.xmlSimple = await sonda(3, 'GET XML sin sesión (cliente simple)', urlXml, { headers: headersSimple });
-  resultados.xmlChrome = await sonda(4, 'GET XML sin sesión (cabeceras de Chrome)', urlXml, { headers: headersChrome });
+  var cdcSegundo = cdcs.length > 1 ? cdcs[1] : null;
+
+  resultados.consultaSimple = await sonda(n(), 'GET /consultas/ (cliente simple)', urlConsulta, { headers: { Accept: 'text/html' } });
+  resultados.consultaChrome = await sonda(n(), 'GET /consultas/ (cabeceras de Chrome)', urlConsulta, { headers: headersChrome }, { jar: jarSesion, opts: opts });
+  resultados.xmlSimple = await sonda(n(), 'GET XML sin sesión · CDC 1 (cliente simple)', urlXml, { headers: headersSimple });
+  resultados.xmlChrome = await sonda(n(), 'GET XML sin sesión · CDC 1 (cabeceras de Chrome)', urlXml, { headers: headersChrome });
+
+  // La sonda que discrimina: ¿el portal sirve cualquier CDC, o sólo el que se
+  // consultó antes en la pantalla de consultas? Mismo cliente, otro CDC.
+  if (cdcSegundo) {
+    resultados.xmlOtroCdc = await sonda(
+      n(),
+      'GET XML sin sesión · CDC 2 (' + cdcSegundo.slice(-6) + ')',
+      red.endpointXml(opts) + cdcSegundo,
+      { headers: headersChrome }
+    );
+  }
+
   resultados.xmlWarmup = await sonda(
-    5,
-    'GET XML con la sesión de /consultas/',
+    n(),
+    'GET XML con la sesión de /consultas/ · CDC 1',
     urlXml,
     { headers: conCookie(headersChrome, jarSesion) },
     { jar: jarSesion, opts: opts }
   );
   resultados.jsonChrome = await sonda(
-    6,
+    n(),
     'POST /docs/documento-electronico {cdc}',
     urlJson,
     {
@@ -244,9 +262,18 @@ async function main() {
   );
 
   if (haySesionImportada) {
-    resultados.xmlImportada = await sonda(7, 'GET XML con tu sesión (--curl/--cookie)', urlXml, { headers: headersNavegador }, { jar: jarNavegador, opts: opts });
+    resultados.xmlImportada = await sonda(n(), 'GET XML con tu sesión (--curl/--cookie) · CDC 1', urlXml, { headers: headersNavegador }, { jar: jarNavegador, opts: opts });
+    if (cdcSegundo) {
+      resultados.xmlImportadaOtro = await sonda(
+        n(),
+        'GET XML con tu sesión · CDC 2 (' + cdcSegundo.slice(-6) + ')',
+        red.endpointXml(opts) + cdcSegundo,
+        { headers: conCookie(headersChrome, jarNavegador) },
+        { jar: jarNavegador, opts: opts }
+      );
+    }
     resultados.jsonImportada = await sonda(
-      8,
+      n(),
       'POST consulta con tu sesión (--curl/--cookie)',
       urlJson,
       {
@@ -278,81 +305,116 @@ async function main() {
 function veredicto(r, haySesionImportada, captura) {
   var l = [];
   var xmlPublico = esXml(r.xmlChrome);
+  var xmlOtro = esXml(r.xmlOtroCdc);
   var xmlWarmup = esXml(r.xmlWarmup);
   var xmlImportada = esXml(r.xmlImportada);
+  var xmlImportadaOtro = esXml(r.xmlImportadaOtro);
   var xmlApi = esXml(r.jsonChrome);
   var xmlApiImportada = esXml(r.jsonImportada);
-  var consultaSimple401 = r.consultaSimple && (r.consultaSimple.estado === 401 || r.consultaSimple.estado === 403);
-  var consultaChromeOk = r.consultaChrome && r.consultaChrome.estado === 200;
+  var rechazado = function (x) {
+    return x && (x.estado === 401 || x.estado === 403);
+  };
   var vacioSinSesion = r.xmlChrome && r.xmlChrome.estado === 200 && !esXml(r.xmlChrome);
+  var pideCaptcha = /captcha/i.test((r.jsonChrome && r.jsonChrome.texto) || '') ||
+    /captcha/i.test((r.consultaChrome && r.consultaChrome.texto) || '');
+
+  /* --- El caso que hay que reconocer primero: el portal sólo sirve el CDC
+         que fue consultado, y contesta 401 para cualquier otro. --- */
+
+  var gatePorCdc = xmlPublico && r.xmlOtroCdc && rechazado(r.xmlOtroCdc);
+  var gatePorCdcConSesion = xmlImportada && r.xmlImportadaOtro && rechazado(r.xmlImportadaOtro);
+
+  if (gatePorCdc || gatePorCdcConSesion) {
+    l.push('→ CONFIRMADO: el portal sólo sirve el XML del CDC que fue consultado');
+    l.push('  en la pantalla de consultas. El "CDC 1" baja (HTTP 200 + XML) y el');
+    l.push('  "CDC 2" —mismo cliente, mismas cabeceras, misma sesión— da 401.');
+    l.push('  No es el User-Agent, ni la cookie, ni el volumen: es el CDC.');
+    l.push('');
+    l.push('  Qué implica: para bajar N comprobantes hay que consultar los N en el portal');
+    l.push('  (con el captcha) antes de descargarlos. Opciones, de menor a mayor esfuerzo:');
+    l.push('    a) Pocos comprobantes: consultá el CDC en el portal y bajá el XML ahí mismo');
+    l.push('       (el botón "Descargar XML" de la pantalla). La extensión ayuda en el');
+    l.push('       popup con el botón "Portal" de cada fila, que abre la consulta con el');
+    l.push('       CDC ya cargado.');
+    l.push('    b) Muchos comprobantes todos los meses: WS de SIFEN con certificado CCFE');
+    l.push('       (https://sifen.set.gov.py/de/ws/consultas/consulta-de.wsdl, respuesta 0422),');
+    l.push('       que no depende de captchas ni de la web.');
+    l.push('    c) Alternativa simple: pedirle los XML al emisor (RG DNIT 06/2024 lo obliga).');
+    l.push('');
+    l.push('  Detalle: CDC 1 → ' + describir(r.xmlChrome) + '; CDC 2 → ' + describir(r.xmlOtroCdc) + '.');
+    return l;
+  }
+
+  var ambosCdcOk = xmlPublico && r.xmlOtroCdc && esXml(r.xmlOtroCdc);
+  if (ambosCdcOk) {
+    l.push('✔ Los dos CDC de la lista bajaron sin sesión: si antes te dio 401, fue un');
+    l.push('  freno pasajero del WAF del portal (F5/Dynatrace), no un problema de tu lista.');
+    l.push('  Corré el lote normal:');
+    l.push('    node tools/descargar-xml.js --entrada cdcs.txt --salida ./xml --pausa 4000');
+    return l;
+  }
 
   if (xmlApi) {
-    l.push('✔ La API JSON (sonda 6) devolvió el XML: usá el descargador con --api.');
+    l.push('✔ La API JSON devolvió el XML: usá el descargador con --api.');
     return l;
   }
   if (xmlImportada || xmlApiImportada) {
     l.push('✔ Con tu sesión del navegador la descarga funciona.');
     l.push('  Corré el lote con:  node tools/descargar-xml.js --entrada cdcs.txt ' +
-      (captura ? '--curl captura-curl.txt' : '--cookie "' + '<la cookie>' + '"'));
-    l.push('  Ojo: si el portal exige que el CDC se haya consultado antes, cada CDC nuevo');
-    l.push('  necesita su consulta en el navegador (captcha incluido). Probá con un segundo CDC.');
-    return l;
-  }
-  if (xmlPublico) {
-    l.push('✔ El endpoint respondió XML sin sesión (sonda 4): este CDC se puede bajar');
-    l.push('  directo. Corré el lote normal (ya manda cabeceras de Chrome):');
-    l.push('    node tools/descargar-xml.js --entrada cdcs.txt');
+      (captura ? '--curl captura-curl.txt' : '--cookie "<la cookie>"'));
+    l.push('  Si algún CDC igual da 401, es el caso del "CDC consultado": consultalo antes');
+    l.push('  en el portal (captcha) y reintentá sólo ese.');
     return l;
   }
   if (xmlWarmup) {
-    l.push('✔ Con el warmup (sonda 5) el portal devolvió el XML: alcanza con abrir la');
-    l.push('  sesión en /consultas/ y no hace falta pegar nada del navegador.');
+    l.push('✔ Con el warmup el portal devolvió el XML: alcanza con abrir la sesión en');
+    l.push('  /consultas/ y no hace falta pegar nada del navegador.');
     l.push('  Corré el lote normal:  node tools/descargar-xml.js --entrada cdcs.txt');
     return l;
   }
-  if (consultaSimple401 && consultaChromeOk) {
-    l.push('→ El filtro del portal corta a los clientes que no parecen navegador');
-    l.push('  (sonda 1 da 401/403 y la sonda 2 da 200). El descargador ya manda cabeceras de');
-    l.push('  Chrome por defecto, así que volvé a probar sin --cliente-simple.');
+  if (xmlPublico) {
+    l.push('✔ El CDC de prueba bajó sin sesión. Si el resto de la lista da 401, probablemente');
+    l.push('  sea el caso del "CDC consultado" (ver la nota de abajo) o un freno del WAF.');
+    l.push('    node tools/descargar-xml.js --entrada cdcs.txt --salida ./xml --pausa 4000');
+    return l;
   }
-  var huboRechazo = [r.xmlSimple, r.xmlChrome, r.xmlWarmup, r.jsonChrome].some(function (x) {
-    return x && (x.estado === 401 || x.estado === 403);
-  });
-  var pideCaptcha = /captcha/i.test((r.jsonChrome && r.jsonChrome.texto) || '');
+
+  var huboRechazo = [r.xmlSimple, r.xmlChrome, r.xmlOtroCdc, r.xmlWarmup, r.jsonChrome].some(rechazado);
 
   if (vacioSinSesion) {
     l.push('→ El portal responde 200 pero con la página vacía cuando la petición no trae la');
     l.push('  sesión de la consulta: el XML se sirve sólo dentro de la sesión que abre el');
     l.push('  navegador al consultar el CDC (captcha incluido). Un script suelto no la tiene.');
   } else if (huboRechazo) {
-    l.push('→ El portal rechaza la descarga directa (401) cuando la petición no trae la sesión');
-    l.push('  del navegador: la pantalla de consultas abre esa sesión al consultar el CDC.');
-    l.push('  Un script suelto no la tiene, aunque mande cabeceras de Chrome.');
+    l.push('→ El portal rechaza la descarga directa (401). Puede ser el WAF (freno pasajero)');
+    l.push('  o que ese CDC no haya sido consultado: el XML parece servirse sólo para el CDC');
+    l.push('  que se consultó antes en la pantalla de consultas.');
   } else {
     l.push('→ Ninguna sonda devolvió el XML. Mirá el detalle de arriba: el portal contestó');
     l.push('  algo distinto de lo esperado en todas las variantes.');
   }
   if (pideCaptcha) {
-    l.push('  Además la consulta pide captcha (reCAPTCHA), así que la sesión sólo se puede abrir');
+    l.push('  Ojo: la consulta pide captcha (reCAPTCHA), así que la sesión sólo se puede abrir');
     l.push('  desde un navegador real.');
   }
   if (!haySesionImportada) {
-    l.push('  Siguiente paso: repetí el diagnóstico con la sesión del navegador.');
-    l.push('    1. En Chrome abrí ' + red.PAGINA_CONSULTA + ' y consultá el CDC con el captcha.');
-    l.push('    2. F12 → pestaña Network → filtro "docs" → clic en la petición');
+    l.push('  Siguiente paso: consultá UN CDC en Chrome (' + red.PAGINA_CONSULTA + ') y volvé');
+    l.push('  a correr el diagnóstico con la sesión copiada:');
+    l.push('    1. F12 → pestaña Network → filtro "docs" → clic en la petición');
     l.push('       "documento-electronico-xml" → clic derecho → Copy → Copy as cURL.');
-    l.push('    3. Guardá eso en captura-curl.txt y corré:');
-    l.push('       node tools/diagnostico.js --entrada cdcs.txt --curl captura-curl.txt');
+    l.push('    2. Guardá eso en captura-curl.txt (nombre entre comillas, para que el Bloc');
+    l.push('       de notas no le agregue otro .txt).');
+    l.push('    3. node tools/diagnostico.js --entrada cdcs.txt --curl captura-curl.txt');
   } else {
-    l.push('→ Ni con tu sesión del navegador el portal devolvió el XML para ese CDC.');
-    l.push('  Probá con otro CDC, y si tampoco, el camino que queda es la extensión de Chrome');
-    l.push('  (misma sesión, mismo navegador) o el WS de SIFEN con certificado CCFE.');
+    l.push('  Ni con tu sesión el portal devolvió el XML para esos CDC: consultálos en el');
+    l.push('  navegador (uno por uno, con captcha) o pasá al WS de SIFEN con certificado CCFE.');
   }
   l.push('');
-  l.push('  Estado: sonda 3/4 (GET sin sesión): ' + describir(r.xmlSimple) + ' / ' + describir(r.xmlChrome) + '.');
-  l.push('          sonda 5 (con warmup): ' + describir(r.xmlWarmup) + '.');
-  l.push('          sonda 6 (API JSON): ' + describir(r.jsonChrome) + '.');
-  if (haySesionImportada) l.push('          sonda 7 (tu sesión): ' + describir(r.xmlImportada) + '.');
+  l.push('  Estado: CDC 1 sin sesión: ' + describir(r.xmlChrome) + '.');
+  if (r.xmlOtroCdc) l.push('          CDC 2 sin sesión: ' + describir(r.xmlOtroCdc) + '.');
+  l.push('          con la sesión de /consultas/: ' + describir(r.xmlWarmup) + '.');
+  l.push('          API JSON: ' + describir(r.jsonChrome) + '.');
+  if (haySesionImportada) l.push('          con tu sesión: ' + describir(r.xmlImportada) + '.');
   return l;
 }
 

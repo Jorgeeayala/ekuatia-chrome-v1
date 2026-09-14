@@ -18,9 +18,29 @@ pelear con el script (ver *Si da 401*, más abajo).
 
 | Caso | Respuesta |
 |---|---|
-| CDC con XML público, **con** la sesión del navegador que consultó el CDC | `200` + `application/xml` con el DTE completo (~10-40 KB) |
-| CDC con XML público, **sin** sesión | `401` (JSON con un `mensaje`) |
-| CDC inexistente, rechazado o inutilizado (con sesión) | `200` + HTML vacío: `<!doctype html><html><head></head><body></body></html>` |
+| El CDC **que se consultó** en la pantalla (y por un rato después) | `200` + `application/xml` con el DTE completo (~10-40 KB) |
+| Cualquier otro CDC | `401` (JSON con `mensaje`) |
+| CDC inexistente, rechazado o inutilizado, ya consultado | `200` + HTML vacío: `<!doctype html><html><head></head><body></body></html>` |
+
+### El "CDC consultado" (comportamiento comprobado el 14/09/2026)
+
+Corrida real del usuario, con 4 CDC y **con** la sesión de su navegador copiada
+(`--curl`):
+
+```
+✓ 01800975120007008007180822026080217723517894  18.8 KB   (el CDC que había consultado en Chrome)
+! 01800084314075001002930022026080517312520869  error: HTTP 401
+! 01800922824011002005054622026080515870915429  error: HTTP 401
+! 01800138767009017015703712026080813424535697  error: HTTP 401
+```
+
+Mismo cliente, mismas cabeceras, misma sesión: **el único que bajó fue el CDC
+consultado**. La sonda 5 de `tools/diagnostico.js` lo confirma con dos CDC
+distintos: el consultado da `200 + XML` y el otro `401`, sin sesión de por medio.
+
+Conclusión práctica: **el portal habilita el XML del comprobante que se consultó**
+(con el captcha) y rechaza el resto. No es el User-Agent, ni la cookie, ni el
+volumen.
 
 Por eso **la respuesta siempre se valida antes de guardar**: si no empieza con
 `<?xml` / `<rDE`, no se escribe el archivo. Si no se hiciera este control, los
@@ -88,43 +108,35 @@ decidir el camino.
 
 ### Paso 2 — Elegir el camino
 
-De menor a mayor esfuerzo:
+Como el portal sólo entrega el XML del CDC que se consultó, la pregunta es
+cuántos comprobantes son y si esto se repite:
 
-**a) Reutilizar la sesión del navegador (rápido, sirve si el portal acepta la
-sesión para cualquier CDC).**
+**a) Pocos comprobantes, cada tanto (el caso de esta herramienta).**
+Consultá cada CDC en el portal y bajá su XML. Por comprobante son tres pasos:
+pegar el CDC, resolver el captcha, **Descargar XML**. La extensión lo hace más
+cómodo: en el popup, cada fila tiene **Portal** (abre la consulta con el CDC ya
+cargado) y **XML** (baja el archivo a `Descargas/e-Kuatia/xml/`). Si no usás la
+extensión, alcanza con la propia pantalla del portal.
 
-1. En Chrome abrí <https://ekuatia.set.gov.py/consultas/> y consultá **un** CDC
-   (resolviendo el captcha).
-2. `F12` → pestaña **Network** → filtrá por `docs` → clic en la petición
-   `documento-electronico-xml/...` → clic derecho → **Copy** → **Copy as cURL**.
-3. Guardá eso en `captura-curl.txt` y corré:
+**b) Muchos comprobantes, todos los meses.** Ahí la web no es el camino: pasá al
+**WS de SIFEN con certificado CCFE**
+(`https://sifen.set.gov.py/de/ws/consultas/consulta-de.wsdl`, respuesta `0422`
+con el XML completo). No depende de captchas, de cookies ni de consultar antes.
+Es la vía oficial y la única pensable para automatizar en serio.
+
+**c) Alternativa simple.** Pedirle los XML al emisor: la RG DNIT 06/2024 lo
+obliga a entregárselos al receptor (normalmente por correo).
+
+**d) La sesión del navegador (`--curl`) sirve sólo para el CDC consultado.** Es
+útil si querés bajar ese XML por línea de comandos en vez de por el navegador:
 
 ```bash
 node tools/descargar-xml.js --entrada cdcs.txt --salida ./xml --curl captura-curl.txt
 ```
 
-`--curl` reutiliza las cabeceras **y la cookie** de esa captura. También podés
-pasar sólo la cookie: `--cookie "JSESSIONID=ABC..."`.
-
-Ojo con el alcance: si el portal exige que **cada** CDC se haya consultado antes
-de bajarlo, con esto vas a poder bajar el CDC consultado y no los demás (el
-diagnóstico lo dice probando con un CDC distinto). La sesión además vence.
-
-**b) La extensión de Chrome.** Corre donde está la sesión y manda las cookies
-del navegador (`credentials: 'include'`), así que es el cliente con más chances:
-consultá el CDC en el portal y descargá desde el popup o con `Alt+X`. Si la
-sesión no está abierta, la extensión ahora lo dice con ese texto en lugar de un
-`401` pelado.
-
-**c) El WS de SIFEN con certificado (la vía oficial).**
-`https://sifen.set.gov.py/de/ws/consultas/consulta-de.wsdl` devuelve el XML
-completo de cualquier CDC (`0422 = CDC encontrado`). Requiere **CCFE**
-(certificado cualificado de firma electrónica) y TLS mutuo, pero no depende de
-captchas ni de una sesión web.
-
-**d) Pedirle el XML al emisor.** La RG DNIT 06/2024 obliga al emisor a
-entregar el XML al receptor (normalmente por correo). Para pocos comprobantes
-suele ser lo más rápido de todo.
+(con el CDC consultado como primera línea de `cdcs.txt`). Para los demás CDC,
+igual hay que consultarlos. Y la sesión vence: cuando empiece a dar 401 de nuevo,
+repetí la captura.
 
 ### Qué **no** sirve
 

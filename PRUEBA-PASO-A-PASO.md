@@ -189,28 +189,29 @@ Los archivos van a `Descargas/e-Kuatia/xml/<CDC>.xml`. En Windows:
 | `Alt+X` no responde | el atajo está en conflicto, o la página es especial | revisalo en `chrome://extensions/shortcuts`; y probá en una página `https://` normal |
 | `Alt+X` en un PDF no lee la selección | el visor de PDF de Chrome no expone la selección al script | usá el menú contextual o el popup |
 
-### 3.1 El caso `HTTP 401` (el que apareció en septiembre de 2026)
+### 3.1 El caso `HTTP 401`
 
-El portal dejó de servir el XML a cualquier cliente: ahora la descarga depende
-de la **sesión** que la pantalla de consultas abre al consultar el CDC (con el
-captcha). Confirmalo y elegí el camino con el diagnóstico:
+Comprobado el 14/09/2026: **el portal sólo entrega el XML del CDC que fue
+consultado** en la pantalla de consultas; para los demás contesta `401` aunque
+le mandes las cabeceras y la sesión del navegador. En una corrida real de 4 CDC
+bajó el primero (el que se había consultado) y los otros tres dieron 401.
+
+Confirmalo con:
 
 ```bash
 node tools/diagnostico.js --entrada cdcs.txt
 ```
 
-Te deja `diagnostico-401.txt` con las ocho sondas y el veredicto. Según lo que
-diga:
+La sonda 5 prueba dos CDC distintos: si el primero baja y el segundo da 401, el
+veredicto lo dice con todas las letras. Y entonces:
 
-- **Si el portal acepta la sesión para cualquier CDC** → copiá la petición del
-  navegador (Chrome → F12 → Network → filtro `docs` → clic en la descarga →
-  *Copy as cURL*), guardala en `captura-curl.txt` y corré el lote con
-  `--curl captura-curl.txt` (o con `--cookie "JSESSIONID=..."`).
-- **Si exige consultar cada CDC** → en lote no se puede sin resolver el captcha:
-  usá la extensión de Chrome CDC por CDC, pedile el XML al emisor, o pasá al
-  WS de SIFEN con certificado CCFE.
+| Cuántos son | Qué hacer |
+|---|---|
+| Pocos | Consultá cada CDC en <https://ekuatia.set.gov.py/consultas/> (captcha) y bajá su XML. Con la extensión: botón **Portal** en la fila → captcha → botón **XML** |
+| Muchos o periódicos | WS de SIFEN con certificado CCFE (`consulta-de.wsdl`) |
+| Alternativa | Pedirle los XML al emisor: la RG DNIT 06/2024 lo obliga |
 
-Está explicado con más detalle en [`DESCARGA-XML.md`](DESCARGA-XML.md) → *"Si da 401"*.
+Más detalle en [`DESCARGA-XML.md`](DESCARGA-XML.md) → *"El CDC consultado"*.
 
 Para validar un CDC suelto sin descargarlo:
 
